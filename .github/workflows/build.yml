@@ -3,82 +3,83 @@ name: Build Void Engine
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "Application URL (leave empty to load local bundle)"
-        required: false
-        default: ""
-        type: string
-      app_name:
-        description: "Application Name (lowercase recommended for Linux)"
-        required: true
-        default: "void"
-        type: string
-      icon_url:
-        description: "Icon URL (.png or .ico)"
-        required: false
-        default: ""
-        type: string
-      width:
-        description: "Window Width"
-        required: true
-        default: "1200"
-        type: string
-      height:
-        description: "Window Height"
-        required: true
-        default: "780"
-        type: string
-      version:
-        description: "Application Version"
-        required: true
-        default: "1.0.0"
-        type: string
-
-      # Target Platform Selection
+      # 1. Targets
       build_macos:
-        description: "Target: macOS"
-        required: true
+        description: 'Target: macOS'
+        required: false
         type: boolean
         default: true
       build_windows:
-        description: "Target: Windows"
-        required: true
+        description: 'Target: Windows'
+        required: false
         type: boolean
         default: false
       build_linux:
-        description: "Target: Linux"
-        required: true
+        description: 'Target: Linux'
+        required: false
         type: boolean
         default: false
       build_android:
-        description: "Target: Android"
-        required: true
+        description: 'Target: Android'
+        required: false
         type: boolean
         default: false
 
-      # Features & Platform-Specific Settings
+      # 2. Core Settings
+      url:
+        description: 'Application URL (Optional - leave empty to load local bundle)'
+        required: false
+        default: ''
+        type: string
+      app_name:
+        description: 'Application Name (lowercase recommended for Linux)'
+        required: true
+        default: 'void'
+        type: string
+      icon_url:
+        description: 'Icon URL (.png or .ico) (Optional)'
+        required: false
+        default: ''
+        type: string
+      width:
+        description: 'Window Width'
+        required: true
+        default: '1200'
+        type: string
+      height:
+        description: 'Window Height'
+        required: true
+        default: '780'
+        type: string
+      version:
+        description: 'Application Version'
+        required: true
+        default: '1.0.0'
+        type: string
+
+      # 3. Extra Options
       fullscreen:
-        description: "Start in fullscreen mode"
+        description: 'Start in fullscreen mode'
         required: false
         type: boolean
         default: false
       hide_title_bar:
-        description: "Hide title bar (macOS only)"
+        description: 'Hide title bar (macOS only)'
         required: false
         type: boolean
         default: false
       new_window:
-        description: "Enable opening target links in new window"
+        description: 'Enable opening target links in new window'
         required: false
         type: boolean
         default: false
       multi_arch:
-        description: "Build Universal Binary (x86_64 + aarch64, macOS only)"
+        description: 'Build Universal Binary (x86_64 + aarch64, macOS only)'
         required: false
         type: boolean
         default: false
       windows_format:
-        description: "Windows package format"
+        description: 'Windows package format'
         required: true
         type: choice
         options:
@@ -87,7 +88,7 @@ on:
           - both
         default: exe
       linux_format:
-        description: "Linux package format"
+        description: 'Linux package format'
         required: true
         type: choice
         options:
