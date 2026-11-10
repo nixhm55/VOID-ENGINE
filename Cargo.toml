@@ -2,6 +2,7 @@
 name = "void"
 version = "0.1.0"
 edition = "2021"
+authors = ["Void Engine <support@void.com>"]
 description = "Void Engine - Lightweight cross-platform desktop and mobile web wrapper"
 license = "MIT"
 
