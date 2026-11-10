@@ -2275,6 +2275,10 @@ name = "void"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "jni",
+ "log",
+ "ndk",
+ "ndk-context",
  "serde",
  "serde_json",
  "tao",

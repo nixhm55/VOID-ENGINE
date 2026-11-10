@@ -3,9 +3,46 @@ name = "void"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "void"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "void"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tao = "0.37"
 wry = "0.57"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+log = "0.4"
+ndk = "0.9"
+ndk-context = "0.1"
+
+[package.metadata.android]
+package = "com.void.void_engine"
+apk_name = "void"
+assets = "dist"
+strip = "strip"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 33
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[package.metadata.android.application]
+label = "Void Engine"
+uses_cleartext_traffic = true
+
+[package.metadata.android.application.activity]
+exported = true
+config_changes = "orientation|keyboardHidden|screenSize"
