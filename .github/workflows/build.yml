@@ -101,7 +101,7 @@ jobs:
   build-macos:
     name: Build macOS (.dmg)
     if: ${{ github.event.inputs.build_macos == 'true' }}
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -126,15 +126,10 @@ jobs:
             ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
             ${{ runner.os }}-rust-
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall-action@v1
-
       - name: Install cargo-bundle
-        shell: bash
-        run: |
-          if ! command -v cargo-bundle >/dev/null 2>&1; then
-            cargo binstall -y cargo-bundle || true
-          fi
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bundle
 
       - name: Configure void.json & App Metadata
         shell: bash
@@ -259,10 +254,13 @@ jobs:
             ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
             ${{ runner.os }}-rust-
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall-action@v1
+      - name: Install cargo-wix
+        if: ${{ github.event.inputs.windows_format == 'msi' || github.event.inputs.windows_format == 'both' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-wix
 
-      - name: Install WiX Toolset & cargo-wix
+      - name: Ensure WiX Toolset in PATH
         if: ${{ github.event.inputs.windows_format == 'msi' || github.event.inputs.windows_format == 'both' }}
         shell: bash
         run: |
@@ -272,9 +270,6 @@ jobs:
           WIX_BIN=$(find "/c/Program Files (x86)" -type d -iname "*WiX Toolset*" -exec find {} -name "bin" \; 2>/dev/null | head -n 1)
           if [ -n "$WIX_BIN" ]; then
             cygpath -w "$WIX_BIN" >> $GITHUB_PATH
-          fi
-          if ! command -v cargo-wix >/dev/null 2>&1; then
-            cargo binstall -y cargo-wix
           fi
 
       - name: Configure void.json
@@ -368,15 +363,11 @@ jobs:
             ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
             ${{ runner.os }}-rust-
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall-action@v1
-
-      - name: Install cargo-deb
+      - name: Install Linux Packaging Tools
         if: ${{ github.event.inputs.linux_format == 'deb' || github.event.inputs.linux_format == 'both' }}
-        run: |
-          if ! command -v cargo-deb >/dev/null 2>&1; then
-            cargo binstall -y cargo-deb
-          fi
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
 
       - name: Configure void.json
         run: |
@@ -486,14 +477,10 @@ jobs:
             ${{ runner.os }}-android-rust-${{ steps.rust.outputs.cachekey }}-
             ${{ runner.os }}-android-rust-
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall-action@v1
-
       - name: Install cargo-apk
-        run: |
-          if ! command -v cargo-apk >/dev/null 2>&1; then
-            cargo binstall -y cargo-apk || cargo install cargo-apk --locked
-          fi
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-apk
 
       - name: Configure void.json
         run: |
