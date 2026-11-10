@@ -2,6 +2,25 @@
 name = "void"
 version = "0.1.0"
 edition = "2021"
+description = "Void Engine - Lightweight cross-platform desktop and mobile web wrapper"
+license = "MIT"
+
+[package.metadata.bundle]
+name = "Void Engine"
+identifier = "com.void.void-engine"
+version = "1.0.0"
+short_description = "Void Engine Web Wrapper"
+
+[package.metadata.deb]
+name = "void"
+maintainer = "Void Engine Developers <dev@void.local>"
+copyright = "2026, Void Engine"
+depends = "$auto"
+section = "web"
+priority = "optional"
+assets = [
+    ["target/release/void", "usr/bin/", "755"],
+]
 
 [lib]
 name = "void"

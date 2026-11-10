@@ -99,7 +99,7 @@ on:
 
 jobs:
   build-macos:
-    name: Build macOS
+    name: Build macOS (.dmg)
     if: ${{ github.event.inputs.build_macos == 'true' }}
     runs-on: macos-latest
     steps:
@@ -113,6 +113,9 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked || true
 
       - name: Configure void.json & App Metadata
         shell: bash
@@ -130,9 +133,6 @@ jobs:
             cfg.new_window = ${{ github.event.inputs.new_window }};
             fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
           '
-          if [ -n "${{ github.event.inputs.icon_url }}" ]; then
-            curl -sSL -o icon.png "${{ github.event.inputs.icon_url }}" || true
-          fi
 
       - name: Compile macOS Binary
         shell: bash
@@ -140,35 +140,76 @@ jobs:
           if [ "${{ github.event.inputs.multi_arch }}" = "true" ]; then
             cargo build --release --bin void --target x86_64-apple-darwin
             cargo build --release --bin void --target aarch64-apple-darwin
-            mkdir -p target/release/universal
-            lipo -create -output target/release/universal/void \
+            mkdir -p target/release
+            lipo -create -output target/release/void \
               target/x86_64-apple-darwin/release/void \
               target/aarch64-apple-darwin/release/void
-            echo "BIN_PATH=target/release/universal/void" >> $GITHUB_ENV
           else
             cargo build --release --bin void
-            echo "BIN_PATH=target/release/void" >> $GITHUB_ENV
           fi
 
-      - name: Package macOS App Bundle (.dmg / .zip)
+      - name: Package macOS .app Bundle & Wrap into .dmg
         shell: bash
         run: |
           APP_NAME="${{ github.event.inputs.app_name }}"
-          BUNDLE_DIR="${APP_NAME}.app/Contents/MacOS"
-          mkdir -p "$BUNDLE_DIR"
-          cp "$BIN_PATH" "$BUNDLE_DIR/${APP_NAME}"
-          chmod +x "$BUNDLE_DIR/${APP_NAME}"
-          zip -r "${APP_NAME}-macos.zip" "${APP_NAME}.app"
+          APP_VERSION="${{ github.event.inputs.version }}"
+          mkdir -p output dmg_staging
 
-      - name: Upload macOS Artifacts
+          if command -v cargo-bundle >/dev/null 2>&1 && cargo bundle --release --bin void --format osx; then
+            BUNDLE_PATH=$(find target/release/bundle/osx -maxdepth 1 -name "*.app" | head -n 1)
+            cp -R "$BUNDLE_PATH" "dmg_staging/${APP_NAME}.app"
+          else
+            APP_DIR="dmg_staging/${APP_NAME}.app/Contents"
+            mkdir -p "${APP_DIR}/MacOS" "${APP_DIR}/Resources"
+            cp target/release/void "${APP_DIR}/MacOS/${APP_NAME}"
+            chmod +x "${APP_DIR}/MacOS/${APP_NAME}"
+            cat > "${APP_DIR}/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.void.${APP_NAME}</string>
+            <key>CFBundleName</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundleDisplayName</key>
+            <string>${APP_NAME}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${APP_VERSION}</string>
+            <key>CFBundleVersion</key>
+            <string>${APP_VERSION}</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+            echo -n "APPL????" > "${APP_DIR}/PkgInfo"
+          fi
+
+          # Ad-hoc sign the .app bundle so macOS Gatekeeper does not mark it damaged
+          codesign --force --deep --sign - "dmg_staging/${APP_NAME}.app"
+          ln -s /Applications dmg_staging/Applications
+
+          hdiutil create \
+            -volname "${APP_NAME}" \
+            -srcfolder dmg_staging \
+            -ov \
+            -format UDZO \
+            "output/${APP_NAME}.dmg"
+
+      - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.app_name }}-macos
-          path: ${{ github.event.inputs.app_name }}-macos.zip
+          name: ${{ github.event.inputs.app_name }}-macos-dmg
+          path: output/*.dmg
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows
+    name: Build Windows (.exe / .msi)
     if: ${{ github.event.inputs.build_windows == 'true' }}
     runs-on: windows-latest
     steps:
@@ -180,6 +221,19 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Install WiX Toolset & cargo-wix
+        if: ${{ github.event.inputs.windows_format == 'msi' || github.event.inputs.windows_format == 'both' }}
+        shell: bash
+        run: |
+          if ! command -v candle.exe >/dev/null 2>&1; then
+            choco install wixtoolset -y --no-progress
+          fi
+          WIX_BIN=$(find "/c/Program Files (x86)" -type d -iname "*WiX Toolset*" -exec find {} -name "bin" \; 2>/dev/null | head -n 1)
+          if [ -n "$WIX_BIN" ]; then
+            cygpath -w "$WIX_BIN" >> $GITHUB_PATH
+          fi
+          cargo install cargo-wix --locked
 
       - name: Configure void.json
         shell: bash
@@ -201,7 +255,7 @@ jobs:
         shell: bash
         run: cargo build --release --bin void
 
-      - name: Package Windows Artifacts
+      - name: Package Windows Artifacts (.exe and/or .msi)
         shell: bash
         run: |
           APP_NAME="${{ github.event.inputs.app_name }}"
@@ -213,26 +267,28 @@ jobs:
           fi
 
           if [ "$FORMAT" = "msi" ] || [ "$FORMAT" = "both" ]; then
-            which wix >/dev/null 2>&1 || cargo install cargo-wix || true
-            cargo wix --no-build --nocapture --output "output/${APP_NAME}.msi" || cp target/release/void.exe "output/${APP_NAME}.exe"
+            cargo wix init --force
+            cargo wix --no-build --nocapture --output "output/${APP_NAME}.msi"
           fi
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-windows
-          path: output/*
+          path: |
+            output/*.exe
+            output/*.msi
           if-no-files-found: error
 
   build-linux:
-    name: Build Linux
+    name: Build Linux (.deb / .AppImage)
     if: ${{ github.event.inputs.build_linux == 'true' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Linux Dependencies (WebKitGTK, GTK3 & libxdo)
+      - name: Install Linux Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -246,7 +302,9 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libxdo-dev
+            libxdo-dev \
+            libfuse2 \
+            imagemagick
 
       - name: Install Rust Stable Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -272,29 +330,62 @@ jobs:
       - name: Build Linux Binary
         run: cargo build --release --bin void
 
-      - name: Package Linux Artifacts (.deb / AppImage)
+      - name: Package Linux Artifacts (.deb and/or .AppImage)
         run: |
           APP_NAME="${{ github.event.inputs.app_name }}"
           FORMAT="${{ github.event.inputs.linux_format }}"
           mkdir -p output
 
           if [ "$FORMAT" = "deb" ] || [ "$FORMAT" = "both" ]; then
-            cargo install cargo-deb --locked || true
-            cargo deb --no-build -p void -o "output/${APP_NAME}.deb" || cp target/release/void "output/${APP_NAME}"
+            cargo install cargo-deb --locked
+            cargo deb --no-build -p void -o "output/${APP_NAME}.deb"
           fi
 
           if [ "$FORMAT" = "appimage" ] || [ "$FORMAT" = "both" ]; then
-            cp target/release/void "output/${APP_NAME}"
+            mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+            cp target/release/void "AppDir/usr/bin/${APP_NAME}"
+            chmod +x "AppDir/usr/bin/${APP_NAME}"
+
+            if [ -n "${{ github.event.inputs.icon_url }}" ]; then
+              curl -sSL "${{ github.event.inputs.icon_url }}" -o raw_icon.png && convert raw_icon.png -resize 256x256 "AppDir/${APP_NAME}.png" || convert -size 256x256 xc:#4f46e5 "AppDir/${APP_NAME}.png"
+            else
+              convert -size 256x256 xc:#4f46e5 "AppDir/${APP_NAME}.png"
+            fi
+            cp "AppDir/${APP_NAME}.png" "AppDir/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png"
+
+            cat > "AppDir/${APP_NAME}.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=${APP_NAME}
+          Exec=${APP_NAME}
+          Icon=${APP_NAME}
+          Categories=Utility;Network;
+          EOF
+            cp "AppDir/${APP_NAME}.desktop" "AppDir/usr/share/applications/${APP_NAME}.desktop"
+
+            cat > "AppDir/AppRun" <<EOF
+          #!/bin/sh
+          HERE="\$(dirname "\$(readlink -f "\${0}")")"
+          exec "\${HERE}/usr/bin/${APP_NAME}" "\$@"
+          EOF
+            chmod +x "AppDir/AppRun"
+
+            wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+            chmod +x appimagetool
+            ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir "output/${APP_NAME}.AppImage"
           fi
 
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-linux
-          path: output/*
+          path: |
+            output/*.deb
+            output/*.AppImage
           if-no-files-found: error
 
   build-android:
+    name: Build Android (.apk)
     if: ${{ github.event.inputs.build_android == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -312,8 +403,23 @@ jobs:
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install cargo-apk
-        run: cargo install cargo-apk
+        run: cargo install cargo-apk --locked
+
+      - name: Configure void.json
+        run: |
+          node -e '
+            const fs = require("fs");
+            let cfg = {};
+            try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            cfg.title = "${{ github.event.inputs.app_name }}";
+            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
+            fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
+          '
 
       - name: Build Android APK
         env:
@@ -324,10 +430,8 @@ jobs:
         run: |
           export NDK_HOME=$ANDROID_NDK_LATEST_HOME
 
-          # ഗിറ്റ്ഹബ്ബ് ആക്ഷൻസിൽ ആൻഡ്രോയിഡ് പ്ലാറ്റ്ഫോം 33 ഇൻസ്റ്റാൾ ചെയ്യാനുള്ള കമാൻഡ്
           (yes || true) | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-33" "build-tools;33.0.2"
 
-          # റിലീസ് APK സൈൻ ചെയ്യാൻ debug keystore ജനറേറ്റ് ചെയ്യുന്നു
           mkdir -p ~/.android
           if [ ! -f ~/.android/debug.keystore ]; then
             keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
@@ -335,8 +439,14 @@ jobs:
 
           cargo apk build --lib --release
 
+          # Remove intermediate unaligned APK and stage only the final aligned APK
+          rm -f target/release/apk/*unaligned*.apk
+          mkdir -p output
+          cp target/release/apk/void.apk "output/${{ github.event.inputs.app_name }}.apk"
+
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-android-apk
-          path: target/release/apk/*.apk
+          path: output/*.apk
+          if-no-files-found: error
