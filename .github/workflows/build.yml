@@ -101,21 +101,40 @@ jobs:
   build-macos:
     name: Build macOS (.dmg)
     if: ${{ github.event.inputs.build_macos == 'true' }}
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Rust Stable Toolchain
+        id: rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ github.event.inputs.multi_arch == 'true' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo Binaries & Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
+            ${{ runner.os }}-rust-
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall-action@v1
 
       - name: Install cargo-bundle
-        run: cargo install cargo-bundle --locked || true
+        shell: bash
+        run: |
+          if ! command -v cargo-bundle >/dev/null 2>&1; then
+            cargo binstall -y cargo-bundle || true
+          fi
 
       - name: Configure void.json & App Metadata
         shell: bash
@@ -124,8 +143,10 @@ jobs:
             const fs = require("fs");
             let cfg = {};
             try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            const inputUrl = "${{ github.event.inputs.url }}".trim();
             cfg.title = "${{ github.event.inputs.app_name }}";
-            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.url = inputUrl;
+            if (inputUrl) { delete cfg.assets; }
             cfg.width = Number("${{ github.event.inputs.width }}") || 1200;
             cfg.height = Number("${{ github.event.inputs.height }}") || 780;
             cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
@@ -158,10 +179,15 @@ jobs:
           if command -v cargo-bundle >/dev/null 2>&1 && cargo bundle --release --bin void --format osx; then
             BUNDLE_PATH=$(find target/release/bundle/osx -maxdepth 1 -name "*.app" | head -n 1)
             cp -R "$BUNDLE_PATH" "dmg_staging/${APP_NAME}.app"
+            mkdir -p "dmg_staging/${APP_NAME}.app/Contents/Resources"
+            cp void.json "dmg_staging/${APP_NAME}.app/Contents/Resources/void.json"
+            cp void.json "dmg_staging/${APP_NAME}.app/Contents/MacOS/void.json"
           else
             APP_DIR="dmg_staging/${APP_NAME}.app/Contents"
             mkdir -p "${APP_DIR}/MacOS" "${APP_DIR}/Resources"
             cp target/release/void "${APP_DIR}/MacOS/${APP_NAME}"
+            cp void.json "${APP_DIR}/MacOS/void.json"
+            cp void.json "${APP_DIR}/Resources/void.json"
             chmod +x "${APP_DIR}/MacOS/${APP_NAME}"
             cat > "${APP_DIR}/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -190,7 +216,6 @@ jobs:
             echo -n "APPL????" > "${APP_DIR}/PkgInfo"
           fi
 
-          # Ad-hoc sign the .app bundle so macOS Gatekeeper does not mark it damaged
           codesign --force --deep --sign - "dmg_staging/${APP_NAME}.app"
           ln -s /Applications dmg_staging/Applications
 
@@ -217,10 +242,25 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust Stable Toolchain
+        id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo Binaries & Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
+            ${{ runner.os }}-rust-
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall-action@v1
 
       - name: Install WiX Toolset & cargo-wix
         if: ${{ github.event.inputs.windows_format == 'msi' || github.event.inputs.windows_format == 'both' }}
@@ -233,7 +273,9 @@ jobs:
           if [ -n "$WIX_BIN" ]; then
             cygpath -w "$WIX_BIN" >> $GITHUB_PATH
           fi
-          cargo install cargo-wix --locked
+          if ! command -v cargo-wix >/dev/null 2>&1; then
+            cargo binstall -y cargo-wix
+          fi
 
       - name: Configure void.json
         shell: bash
@@ -242,8 +284,10 @@ jobs:
             const fs = require("fs");
             let cfg = {};
             try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            const inputUrl = "${{ github.event.inputs.url }}".trim();
             cfg.title = "${{ github.event.inputs.app_name }}";
-            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.url = inputUrl;
+            if (inputUrl) { delete cfg.assets; }
             cfg.width = Number("${{ github.event.inputs.width }}") || 1200;
             cfg.height = Number("${{ github.event.inputs.height }}") || 780;
             cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
@@ -307,10 +351,32 @@ jobs:
             imagemagick
 
       - name: Install Rust Stable Toolchain
+        id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo Binaries & Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
+            ${{ runner.os }}-rust-
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall-action@v1
+
+      - name: Install cargo-deb
+        if: ${{ github.event.inputs.linux_format == 'deb' || github.event.inputs.linux_format == 'both' }}
+        run: |
+          if ! command -v cargo-deb >/dev/null 2>&1; then
+            cargo binstall -y cargo-deb
+          fi
 
       - name: Configure void.json
         run: |
@@ -318,8 +384,10 @@ jobs:
             const fs = require("fs");
             let cfg = {};
             try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            const inputUrl = "${{ github.event.inputs.url }}".trim();
             cfg.title = "${{ github.event.inputs.app_name }}";
-            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.url = inputUrl;
+            if (inputUrl) { delete cfg.assets; }
             cfg.width = Number("${{ github.event.inputs.width }}") || 1200;
             cfg.height = Number("${{ github.event.inputs.height }}") || 780;
             cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
@@ -337,13 +405,13 @@ jobs:
           mkdir -p output
 
           if [ "$FORMAT" = "deb" ] || [ "$FORMAT" = "both" ]; then
-            cargo install cargo-deb --locked
             cargo deb --no-build -p void -o "output/${APP_NAME}.deb"
           fi
 
           if [ "$FORMAT" = "appimage" ] || [ "$FORMAT" = "both" ]; then
             mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
             cp target/release/void "AppDir/usr/bin/${APP_NAME}"
+            cp void.json "AppDir/usr/bin/void.json"
             chmod +x "AppDir/usr/bin/${APP_NAME}"
 
             if [ -n "${{ github.event.inputs.icon_url }}" ]; then
@@ -399,15 +467,33 @@ jobs:
           java-version: '17'
 
       - name: Setup Rust & Android Targets
+        id: rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo Binaries & Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-android-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-android-rust-${{ steps.rust.outputs.cachekey }}-
+            ${{ runner.os }}-android-rust-
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall-action@v1
 
       - name: Install cargo-apk
-        run: cargo install cargo-apk --locked
+        run: |
+          if ! command -v cargo-apk >/dev/null 2>&1; then
+            cargo binstall -y cargo-apk || cargo install cargo-apk --locked
+          fi
 
       - name: Configure void.json
         run: |
@@ -415,10 +501,13 @@ jobs:
             const fs = require("fs");
             let cfg = {};
             try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            const inputUrl = "${{ github.event.inputs.url }}".trim();
             cfg.title = "${{ github.event.inputs.app_name }}";
-            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.url = inputUrl;
+            if (inputUrl) { delete cfg.assets; }
             cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
             fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
+            fs.writeFileSync("dist/void.json", JSON.stringify(cfg, null, 2));
           '
 
       - name: Build Android APK
@@ -439,7 +528,6 @@ jobs:
 
           cargo apk build --lib --release
 
-          # Remove intermediate unaligned APK and stage only the final aligned APK
           rm -f target/release/apk/*unaligned*.apk
           mkdir -p output
           cp target/release/apk/void.apk "output/${{ github.event.inputs.app_name }}.apk"

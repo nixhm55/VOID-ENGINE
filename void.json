@@ -1,6 +1,10 @@
 {
   "title": "Void App",
+  "url": "",
   "assets": "dist/index.html",
-  "width": 1000,
-  "height": 700
+  "width": 1200,
+  "height": 780,
+  "fullscreen": false,
+  "hide_title_bar": false,
+  "new_window": false
 }
