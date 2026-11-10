@@ -171,7 +171,7 @@ jobs:
           APP_VERSION="${{ github.event.inputs.version }}"
           mkdir -p output dmg_staging
 
-          if command -v cargo-bundle >/dev/null 2>&1 && cargo bundle --release --bin void --format osx; then
+          if command -v cargo-bundle >/dev/null 2>&1 && cargo bundle --release --bin void --format osx --binary-path target/release/void; then
             BUNDLE_PATH=$(find target/release/bundle/osx -maxdepth 1 -name "*.app" | head -n 1)
             cp -R "$BUNDLE_PATH" "dmg_staging/${APP_NAME}.app"
             mkdir -p "dmg_staging/${APP_NAME}.app/Contents/Resources"
