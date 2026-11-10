@@ -319,12 +319,20 @@ jobs:
         env:
           WRY_ANDROID_PACKAGE: "com.void.void_engine"
           WRY_ANDROID_LIBRARY: "void"
+          CARGO_APK_RELEASE_KEYSTORE: "/home/runner/.android/debug.keystore"
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: "android"
         run: |
           export NDK_HOME=$ANDROID_NDK_LATEST_HOME
-          
+
           # ഗിറ്റ്ഹബ്ബ് ആക്ഷൻസിൽ ആൻഡ്രോയിഡ് പ്ലാറ്റ്ഫോം 33 ഇൻസ്റ്റാൾ ചെയ്യാനുള്ള കമാൻഡ്
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-33"
-          
+          (yes || true) | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-33" "build-tools;33.0.2"
+
+          # റിലീസ് APK സൈൻ ചെയ്യാൻ debug keystore ജനറേറ്റ് ചെയ്യുന്നു
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
           cargo apk build --lib --release
 
       - name: Upload Android APK
