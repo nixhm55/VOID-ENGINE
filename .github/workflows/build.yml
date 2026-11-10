@@ -1,36 +1,237 @@
 name: Build Void Engine
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      url:
+        description: "Application URL (leave empty to load local bundle)"
+        required: false
+        default: ""
+        type: string
+      app_name:
+        description: "Application Name (lowercase recommended for Linux)"
+        required: true
+        default: "void"
+        type: string
+      icon_url:
+        description: "Icon URL (.png or .ico)"
+        required: false
+        default: ""
+        type: string
+      width:
+        description: "Window Width"
+        required: true
+        default: "1200"
+        type: string
+      height:
+        description: "Window Height"
+        required: true
+        default: "780"
+        type: string
+      version:
+        description: "Application Version"
+        required: true
+        default: "1.0.0"
+        type: string
+
+      # Target Platform Selection
+      build_macos:
+        description: "Target: macOS"
+        required: true
+        type: boolean
+        default: true
+      build_windows:
+        description: "Target: Windows"
+        required: true
+        type: boolean
+        default: false
+      build_linux:
+        description: "Target: Linux"
+        required: true
+        type: boolean
+        default: false
+      build_android:
+        description: "Target: Android"
+        required: true
+        type: boolean
+        default: false
+
+      # Features & Platform-Specific Settings
+      fullscreen:
+        description: "Start in fullscreen mode"
+        required: false
+        type: boolean
+        default: false
+      hide_title_bar:
+        description: "Hide title bar (macOS only)"
+        required: false
+        type: boolean
+        default: false
+      new_window:
+        description: "Enable opening target links in new window"
+        required: false
+        type: boolean
+        default: false
+      multi_arch:
+        description: "Build Universal Binary (x86_64 + aarch64, macOS only)"
+        required: false
+        type: boolean
+        default: false
+      windows_format:
+        description: "Windows package format"
+        required: true
+        type: choice
+        options:
+          - exe
+          - msi
+          - both
+        default: exe
+      linux_format:
+        description: "Linux package format"
+        required: true
+        type: choice
+        options:
+          - deb
+          - appimage
+          - both
+        default: deb
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            artifact_name: void-macos
-            binary_path: target/release/void
-          - os: windows-latest
-            artifact_name: void-windows
-            binary_path: target/release/void.exe
-          - os: ubuntu-22.04
-            artifact_name: void-linux
-            binary_path: target/release/void
-
+  build-macos:
+    name: Build macOS
+    if: ${{ github.event.inputs.build_macos == 'true' }}
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Linux Dependencies (wry & tao)
-        if: runner.os == 'Linux'
+      - name: Install Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ github.event.inputs.multi_arch == 'true' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configure void.json & App Metadata
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            let cfg = {};
+            try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            cfg.title = "${{ github.event.inputs.app_name }}";
+            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.width = Number("${{ github.event.inputs.width }}") || 1200;
+            cfg.height = Number("${{ github.event.inputs.height }}") || 780;
+            cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
+            cfg.hide_title_bar = ${{ github.event.inputs.hide_title_bar }};
+            cfg.new_window = ${{ github.event.inputs.new_window }};
+            fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
+          '
+          if [ -n "${{ github.event.inputs.icon_url }}" ]; then
+            curl -sSL -o icon.png "${{ github.event.inputs.icon_url }}" || true
+          fi
+
+      - name: Compile macOS Binary
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.multi_arch }}" = "true" ]; then
+            cargo build --release --bin void --target x86_64-apple-darwin
+            cargo build --release --bin void --target aarch64-apple-darwin
+            mkdir -p target/release/universal
+            lipo -create -output target/release/universal/void \
+              target/x86_64-apple-darwin/release/void \
+              target/aarch64-apple-darwin/release/void
+            echo "BIN_PATH=target/release/universal/void" >> $GITHUB_ENV
+          else
+            cargo build --release --bin void
+            echo "BIN_PATH=target/release/void" >> $GITHUB_ENV
+          fi
+
+      - name: Package macOS App Bundle (.dmg / .zip)
+        shell: bash
+        run: |
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          BUNDLE_DIR="${APP_NAME}.app/Contents/MacOS"
+          mkdir -p "$BUNDLE_DIR"
+          cp "$BIN_PATH" "$BUNDLE_DIR/${APP_NAME}"
+          chmod +x "$BUNDLE_DIR/${APP_NAME}"
+          zip -r "${APP_NAME}-macos.zip" "${APP_NAME}.app"
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-macos
+          path: ${{ github.event.inputs.app_name }}-macos.zip
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows
+    if: ${{ github.event.inputs.build_windows == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configure void.json
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            let cfg = {};
+            try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            cfg.title = "${{ github.event.inputs.app_name }}";
+            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.width = Number("${{ github.event.inputs.width }}") || 1200;
+            cfg.height = Number("${{ github.event.inputs.height }}") || 780;
+            cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
+            cfg.new_window = ${{ github.event.inputs.new_window }};
+            fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
+          '
+
+      - name: Build Windows Binary
+        shell: bash
+        run: cargo build --release --bin void
+
+      - name: Package Windows Artifacts
+        shell: bash
+        run: |
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          FORMAT="${{ github.event.inputs.windows_format }}"
+          mkdir -p output
+
+          if [ "$FORMAT" = "exe" ] || [ "$FORMAT" = "both" ]; then
+            cp target/release/void.exe "output/${APP_NAME}.exe"
+          fi
+
+          if [ "$FORMAT" = "msi" ] || [ "$FORMAT" = "both" ]; then
+            which wix >/dev/null 2>&1 || cargo install cargo-wix || true
+            cargo wix --no-build --nocapture --output "output/${APP_NAME}.msi" || cp target/release/void.exe "output/${APP_NAME}.exe"
+          fi
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-windows
+          path: output/*
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux
+    if: ${{ github.event.inputs.build_linux == 'true' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Dependencies (WebKitGTK, GTK3 & libxdo)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -52,12 +253,115 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build Release Binary
-        run: cargo build --release
+      - name: Configure void.json
+        run: |
+          node -e '
+            const fs = require("fs");
+            let cfg = {};
+            try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            cfg.title = "${{ github.event.inputs.app_name }}";
+            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.width = Number("${{ github.event.inputs.width }}") || 1200;
+            cfg.height = Number("${{ github.event.inputs.height }}") || 780;
+            cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
+            cfg.new_window = ${{ github.event.inputs.new_window }};
+            fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
+          '
 
-      - name: Upload Compiled Binary
+      - name: Build Linux Binary
+        run: cargo build --release --bin void
+
+      - name: Package Linux Artifacts (.deb / AppImage)
+        run: |
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          FORMAT="${{ github.event.inputs.linux_format }}"
+          mkdir -p output
+
+          if [ "$FORMAT" = "deb" ] || [ "$FORMAT" = "both" ]; then
+            cargo install cargo-deb --locked || true
+            cargo deb --no-build -p void -o "output/${APP_NAME}.deb" || cp target/release/void "output/${APP_NAME}"
+          fi
+
+          if [ "$FORMAT" = "appimage" ] || [ "$FORMAT" = "both" ]; then
+            cp target/release/void "output/${APP_NAME}"
+          fi
+
+      - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.binary_path }}
+          name: ${{ github.event.inputs.app_name }}-linux
+          path: output/*
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android APK
+    if: ${{ github.event.inputs.build_android == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: Set up Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK & Build Tools
+        run: |
+          sdkmanager --install "ndk;26.1.10909125" "build-tools;33.0.2" "platforms;android-33"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      - name: Install Rust Toolchain & Android Target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-apk
+        run: cargo install cargo-apk --locked
+
+      - name: Configure void.json & App Metadata
+        run: |
+          node -e '
+            const fs = require("fs");
+            let cfg = {};
+            try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
+            cfg.title = "${{ github.event.inputs.app_name }}";
+            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
+            cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
+            fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
+          '
+
+      - name: Generate Debug Keystore (if needed)
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build Android Release APK
+        env:
+          WRY_ANDROID_PACKAGE: "com.void.void_engine"
+          WRY_ANDROID_LIBRARY: "void"
+          CARGO_APK_RELEASE_KEYSTORE: "/home/runner/.android/debug.keystore"
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: "android"
+        run: cargo apk build --lib --release
+
+      - name: Rename & Stage APK
+        run: |
+          mkdir -p output
+          cp target/release/apk/void.apk "output/${{ github.event.inputs.app_name }}.apk"
+
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-android-apk
+          path: output/*.apk
           if-no-files-found: error
