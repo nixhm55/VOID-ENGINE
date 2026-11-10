@@ -1,0 +1,6 @@
+{
+  "title": "Void App",
+  "assets": "dist/index.html",
+  "width": 1000,
+  "height": 700
+}
