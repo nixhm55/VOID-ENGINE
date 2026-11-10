@@ -295,74 +295,39 @@ jobs:
           if-no-files-found: error
 
   build-android:
-    name: Build Android APK
     if: ${{ github.event.inputs.build_android == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Setup Java (Required for Android SDK)
         uses: actions/setup-java@v4
         with:
-          distribution: "zulu"
-          java-version: "17"
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK & Build Tools
-        run: |
-          sdkmanager --install "ndk;26.1.10909125" "build-tools;33.0.2" "platforms;android-33"
-          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125" >> $GITHUB_ENV
-
-      - name: Install Rust Toolchain & Android Target
+      - name: Setup Rust & Android Targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+          targets: aarch64-linux-android, armv7-linux-androideabi
 
       - name: Install cargo-apk
-        run: cargo install cargo-apk --locked
+        run: cargo install cargo-apk
 
-      - name: Configure void.json & App Metadata
-        run: |
-          node -e '
-            const fs = require("fs");
-            let cfg = {};
-            try { cfg = JSON.parse(fs.readFileSync("void.json", "utf8")); } catch(e) {}
-            cfg.title = "${{ github.event.inputs.app_name }}";
-            cfg.url = "${{ github.event.inputs.url }}" || cfg.url;
-            cfg.fullscreen = ${{ github.event.inputs.fullscreen }};
-            fs.writeFileSync("void.json", JSON.stringify(cfg, null, 2));
-          '
-
-      - name: Generate Debug Keystore (if needed)
-        run: |
-          mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-      - name: Build Android Release APK
+      - name: Build Android APK
         env:
           WRY_ANDROID_PACKAGE: "com.void.void_engine"
           WRY_ANDROID_LIBRARY: "void"
-          CARGO_APK_RELEASE_KEYSTORE: "/home/runner/.android/debug.keystore"
-          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: "android"
-        run: cargo apk build --lib --release
-
-      - name: Rename & Stage APK
         run: |
-          mkdir -p output
-          cp target/release/apk/void.apk "output/${{ github.event.inputs.app_name }}.apk"
+          # Use GitHub Action's built-in NDK path
+          export NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          
+          # Replicate our successful local build command
+          cargo apk build --lib --release
 
-      - name: Upload Android APK Artifact
+      - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.app_name }}-android-apk
-          path: output/*.apk
-          if-no-files-found: error
+          path: target/release/apk/*.apk
