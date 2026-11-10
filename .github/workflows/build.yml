@@ -320,10 +320,11 @@ jobs:
           WRY_ANDROID_PACKAGE: "com.void.void_engine"
           WRY_ANDROID_LIBRARY: "void"
         run: |
-          # Use GitHub Action's built-in NDK path
           export NDK_HOME=$ANDROID_NDK_LATEST_HOME
           
-          # Replicate our successful local build command
+          # ഗിറ്റ്ഹബ്ബ് ആക്ഷൻസിൽ ആൻഡ്രോയിഡ് പ്ലാറ്റ്ഫോം 33 ഇൻസ്റ്റാൾ ചെയ്യാനുള്ള കമാൻഡ്
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-33"
+          
           cargo apk build --lib --release
 
       - name: Upload Android APK
