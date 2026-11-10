@@ -101,10 +101,10 @@ jobs:
   build-macos:
     name: Build macOS (.dmg)
     if: ${{ github.event.inputs.build_macos == 'true' }}
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust Stable Toolchain
         id: rust
@@ -113,7 +113,7 @@ jobs:
           targets: ${{ github.event.inputs.multi_arch == 'true' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
 
       - name: Cache Cargo Binaries & Dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -222,7 +222,7 @@ jobs:
             "output/${APP_NAME}.dmg"
 
       - name: Upload macOS DMG Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.inputs.app_name }}-macos-dmg
           path: output/*.dmg
@@ -231,17 +231,17 @@ jobs:
   build-windows:
     name: Build Windows (.exe / .msi)
     if: ${{ github.event.inputs.build_windows == 'true' }}
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust Stable Toolchain
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo Binaries & Dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -262,15 +262,17 @@ jobs:
 
       - name: Ensure WiX Toolset in PATH
         if: ${{ github.event.inputs.windows_format == 'msi' || github.event.inputs.windows_format == 'both' }}
-        shell: bash
+        shell: pwsh
         run: |
-          if ! command -v candle.exe >/dev/null 2>&1; then
-            choco install wixtoolset -y --no-progress
-          fi
-          WIX_BIN=$(find "/c/Program Files (x86)" -type d -iname "*WiX Toolset*" -exec find {} -name "bin" \; 2>/dev/null | head -n 1)
-          if [ -n "$WIX_BIN" ]; then
-            cygpath -w "$WIX_BIN" >> $GITHUB_PATH
-          fi
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+            $wixBin = Join-Path $programFilesX86 "WiX Toolset v3.14\bin"
+            if (Test-Path (Join-Path $wixBin "candle.exe")) {
+              Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+            } else {
+              throw "WiX Toolset 3.14 was not found on the Windows 2025 runner."
+            }
+          }
 
       - name: Configure void.json
         shell: bash
@@ -311,7 +313,7 @@ jobs:
           fi
 
       - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.inputs.app_name }}-windows
           path: |
@@ -322,17 +324,16 @@ jobs:
   build-linux:
     name: Build Linux (.deb / .AppImage)
     if: ${{ github.event.inputs.build_linux == 'true' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libwebkit2gtk-4.0-dev \
             build-essential \
             curl \
             wget \
@@ -350,7 +351,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo Binaries & Dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -358,10 +359,10 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-ubuntu-24.04-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rust-${{ steps.rust.outputs.cachekey }}-
-            ${{ runner.os }}-rust-
+            ${{ runner.os }}-ubuntu-24.04-rust-${{ steps.rust.outputs.cachekey }}-
+            ${{ runner.os }}-ubuntu-24.04-rust-
 
       - name: Install Linux Packaging Tools
         if: ${{ github.event.inputs.linux_format == 'deb' || github.event.inputs.linux_format == 'both' }}
@@ -435,7 +436,7 @@ jobs:
           fi
 
       - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.inputs.app_name }}-linux
           path: |
@@ -446,13 +447,13 @@ jobs:
   build-android:
     name: Build Android (.apk)
     if: ${{ github.event.inputs.build_android == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Java (Required for Android SDK)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -461,10 +462,10 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android, armv7-linux-androideabi
+          targets: aarch64-linux-android
 
       - name: Cache Cargo Binaries & Dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -472,10 +473,10 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-android-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-ubuntu-24.04-android-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-android-rust-${{ steps.rust.outputs.cachekey }}-
-            ${{ runner.os }}-android-rust-
+            ${{ runner.os }}-ubuntu-24.04-android-rust-${{ steps.rust.outputs.cachekey }}-
+            ${{ runner.os }}-ubuntu-24.04-android-rust-
 
       - name: Install cargo-apk
         uses: taiki-e/install-action@v2
@@ -506,7 +507,9 @@ jobs:
         run: |
           export NDK_HOME=$ANDROID_NDK_LATEST_HOME
 
-          (yes || true) | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-33" "build-tools;33.0.2"
+          if [ ! -d "$ANDROID_HOME/platforms/android-33" ] || [ ! -x "$ANDROID_HOME/build-tools/33.0.2/aapt" ]; then
+            (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;33.0.2"
+          fi
 
           mkdir -p ~/.android
           if [ ! -f ~/.android/debug.keystore ]; then
@@ -520,7 +523,7 @@ jobs:
           cp target/release/apk/void.apk "output/${{ github.event.inputs.app_name }}.apk"
 
       - name: Upload Android APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ github.event.inputs.app_name }}-android-apk
           path: output/*.apk
