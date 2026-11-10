@@ -334,17 +334,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libfuse2 \
-            imagemagick
+            build-essential
+
+      - name: Install Linux AppImage Tools
+        if: ${{ github.event.inputs.linux_format == 'appimage' || github.event.inputs.linux_format == 'both' }}
+        run: sudo apt-get install -y libfuse2 imagemagick
 
       - name: Install Rust Stable Toolchain
         id: rust
