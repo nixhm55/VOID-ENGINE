@@ -97,6 +97,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Rust stable toolchain
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.multi_arch && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos
+
       - name: Configure app metadata
         id: configure
         env:
@@ -116,17 +127,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ inputs.multi_arch && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
-
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: macos
 
       - name: Install cargo-bundle
         uses: taiki-e/install-action@v2
@@ -224,6 +224,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Rust stable toolchain
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+
       - name: Configure app metadata
         id: configure
         env:
@@ -243,16 +252,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: windows
-          cache-workspace-crates: "true"
 
       - name: Set up MSVC and Windows SDK tools
         uses: ilammy/msvc-dev-cmd@v1
@@ -335,6 +334,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Rust stable toolchain
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+
       - name: Configure app metadata
         id: configure
         env:
@@ -355,20 +363,11 @@ jobs:
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
 
-      - name: Cache Linux packaging packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/void-apt-archives
-          key: ubuntu-24.04-${{ matrix.format }}-apt-v1
-          restore-keys: |
-            ubuntu-24.04-${{ matrix.format }}-apt-
-
       - name: Install Linux build dependencies
         env:
-          APT_ARCHIVES: ${{ runner.temp }}/void-apt-archives
+          APPIMAGE_FORMAT: ${{ matrix.format == 'appimage' }}
         run: |
           set -euo pipefail
-          mkdir -p "$APT_ARCHIVES/partial"
           missing=()
           for tool in gcc g++ make pkg-config; do
             if ! command -v "$tool" >/dev/null 2>&1; then
@@ -379,27 +378,17 @@ jobs:
           if ! dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev 2>/dev/null | grep -q 'install ok installed'; then
             missing+=(libwebkit2gtk-4.1-dev)
           fi
-          if ((${#missing[@]})); then
-            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" update -qq
-            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" install -y --no-install-recommends "${missing[@]}"
-          fi
-
-      - name: Install AppImage tools
-        if: ${{ matrix.format == 'appimage' }}
-        env:
-          APT_ARCHIVES: ${{ runner.temp }}/void-apt-archives
-        run: |
-          set -euo pipefail
-          missing=()
-          if ! dpkg-query -W -f='${Status}' libfuse2 2>/dev/null | grep -q 'install ok installed'; then
-            missing+=(libfuse2)
-          fi
-          if ! command -v convert >/dev/null 2>&1; then
-            missing+=(imagemagick)
+          if [ "$APPIMAGE_FORMAT" = "true" ]; then
+            if ! dpkg-query -W -f='${Status}' libfuse2 2>/dev/null | grep -q 'install ok installed'; then
+              missing+=(libfuse2)
+            fi
+            if ! command -v convert >/dev/null 2>&1; then
+              missing+=(imagemagick)
+            fi
           fi
           if ((${#missing[@]})); then
-            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" update -qq
-            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" install -y --no-install-recommends "${missing[@]}"
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
           fi
 
       - name: Cache AppImage tool
@@ -408,16 +397,6 @@ jobs:
         with:
           path: .cache/appimagetool-x86_64.AppImage
           key: appimagetool-x86_64-v1
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: linux
-          cache-workspace-crates: "true"
 
       - name: Install cargo-deb
         if: ${{ matrix.format == 'deb' }}
@@ -484,6 +463,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Rust stable toolchain
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android
+
       - name: Configure app metadata
         id: configure
         env:
@@ -503,23 +499,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Setup Java
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: android
 
       - name: Install cargo-apk
         uses: taiki-e/install-action@v2
