@@ -54,14 +54,13 @@ $wxs = @'
     </Feature>
     <DirectoryRef Id="INSTALLFOLDER">
       <Component Id="ApplicationFiles" Guid="*" Win64="yes">
-        <File Id="ApplicationExe" Source="$(var.BinaryPath)" Name="$(var.AppSlug).exe" KeyPath="yes">
-          <Shortcut Id="ApplicationShortcut" Directory="StartMenuDir" Name="@@APP_NAME@@" Target="[INSTALLFOLDER]$(var.AppSlug).exe" WorkingDirectory="INSTALLFOLDER" Icon="ProductIcon" IconIndex="0" Advertise="yes" />
-        </File>
+        <File Id="ApplicationExe" Source="$(var.BinaryPath)" Name="$(var.AppSlug).exe" KeyPath="yes" />
         <File Id="ApplicationConfig" Source="$(var.ConfigPath)" Name="$(var.AppSlug).json" />
       </Component>
     </DirectoryRef>
     <DirectoryRef Id="StartMenuDir">
       <Component Id="StartMenuCleanup" Guid="*" Win64="yes">
+        <Shortcut Id="ApplicationShortcut" Name="@@APP_NAME@@" Target="[INSTALLFOLDER]$(var.AppSlug).exe" WorkingDirectory="INSTALLFOLDER" Icon="ProductIcon" IconIndex="0" />
         <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\VOID Engine\$(var.AppSlug)" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>

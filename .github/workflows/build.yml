@@ -354,8 +354,13 @@ jobs:
           if [[ ! -f "$ANDROID_HOME/platforms/android-33/android.jar" \
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+            # sdkmanager exits after accepting licenses and closes stdin;
+            # `yes` may then receive SIGPIPE. Keep sdkmanager's status as the
+            # pipeline status so real SDK installation failures still fail.
+            set +o pipefail
+            yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
               "platforms;android-33" "build-tools;34.0.0"
+            set -o pipefail
           fi
           mkdir -p ~/.android target/master
           if [[ ! -f ~/.android/debug.keystore ]]; then
