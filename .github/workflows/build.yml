@@ -289,11 +289,33 @@ jobs:
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p output
-          cargo wix init --force --product-name "$APP_NAME" --product-icon branding/app.ico
-          cargo wix --no-build --nocapture --output "output/${APP_SLUG}.msi"
+          $ErrorActionPreference = 'Stop'
+          $productName = if ([string]::IsNullOrWhiteSpace($env:APP_NAME)) { 'VOID Engine' } else { $env:APP_NAME.Trim() }
+          New-Item -ItemType Directory -Force output | Out-Null
+
+          cargo wix init --force --product-name $productName --product-icon branding/app.ico
+          if ($LASTEXITCODE -ne 0) { throw "cargo wix init failed with exit code $LASTEXITCODE" }
+
+          $wxsPath = Join-Path $PWD 'wix/main.wxs'
+          if (-not (Test-Path -LiteralPath $wxsPath)) { throw "cargo wix did not create $wxsPath" }
+
+          [xml]$wxs = Get-Content -LiteralPath $wxsPath -Raw
+          $product = $wxs.SelectSingleNode("//*[local-name()='Product']")
+          if ($null -eq $product) { throw 'Could not find the WiX Product element in wix/main.wxs' }
+          $product.SetAttribute('Name', $productName)
+          $wxs.Save($wxsPath)
+
+          [xml]$verifiedWxs = Get-Content -LiteralPath $wxsPath -Raw
+          $verifiedProduct = $verifiedWxs.SelectSingleNode("//*[local-name()='Product']")
+          if ($null -eq $verifiedProduct -or [string]::IsNullOrWhiteSpace($verifiedProduct.GetAttribute('Name'))) {
+            throw 'WiX Product/@Name is empty after applying the fallback name.'
+          }
+
+          $msiPath = "output/$($env:APP_SLUG).msi"
+          cargo wix --no-build --nocapture --output $msiPath
+          if ($LASTEXITCODE -ne 0) { throw "cargo wix failed with exit code $LASTEXITCODE" }
 
       - uses: actions/upload-artifact@v7
         with:

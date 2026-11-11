@@ -85,9 +85,3 @@ has_code = true
 name = "com.mdnm.voidengine.VoidActivity"
 exported = true
 config_changes = "orientation|keyboardHidden|screenSize"
-
-[workspace]
-members = ["."]
-exclude = ["client"]
-default-members = ["."]
-resolver = "2"
