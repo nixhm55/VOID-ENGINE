@@ -7,8 +7,8 @@ description = "Void Engine - Lightweight cross-platform desktop and mobile web w
 license = "MIT"
 
 [package.metadata.bundle]
-name = "Void Engine"
-identifier = "com.void.void-engine"
+name = "VOID"
+identifier = "com.void.void"
 version = "1.0.0"
 short_description = "Void Engine Web Wrapper"
 
@@ -46,7 +46,7 @@ ndk = "0.9"
 ndk-context = "0.1"
 
 [package.metadata.android]
-package = "com.void.void_engine"
+package = "com.void.void"
 apk_name = "void"
 assets = "dist"
 strip = "strip"
@@ -76,7 +76,8 @@ max_sdk_version = 28
 name = "android.permission.POST_NOTIFICATIONS"
 
 [package.metadata.android.application]
-label = "Void Engine"
+label = "VOID"
+theme = "@android:style/Theme.Material.NoActionBar"
 uses_cleartext_traffic = true
 has_code = true
 

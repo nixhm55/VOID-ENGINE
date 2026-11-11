@@ -10,7 +10,7 @@ use std::{
 use tao::dpi::LogicalSize;
 use tao::{
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::{Fullscreen, WindowBuilder},
 };
 use wry::{
@@ -30,6 +30,89 @@ const VOID_GLYPHS: [[&str; 5]; 4] = [
     [" ##### ", "   #   ", "   #   ", "   #   ", " ##### "],
     ["#####  ", "##   ##", "##   ##", "##   ##", "#####  "],
 ];
+
+#[derive(Debug, Clone, Copy)]
+enum WindowAction {
+    Close,
+    Minimize,
+    ToggleMaximize,
+    Drag,
+}
+
+const WINDOW_CONTROLS_SCRIPT: &str = r#"(() => {
+  if (window !== window.top || window.__voidControlsInstalled) return;
+  window.__voidControlsInstalled = true;
+  const appTitle = __VOID_APP_TITLE__;
+  const post = (message) => window.ipc && window.ipc.postMessage(message);
+  const mount = () => {
+    if (!document.documentElement || document.getElementById('__void_window_controls')) return;
+    const style = document.createElement('style');
+    style.textContent = `#\u005f\u005fvoid_window_controls{position:fixed;z-index:2147483647;left:0;right:0;top:0;height:36px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:rgba(25,25,27,.94);color:#f3f3f3;font:12px -apple-system,BlinkMacSystemFont,sans-serif;user-select:none;-webkit-user-select:none}#\u005f\u005fvoid_window_controls .void-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65vw;pointer-events:none}#\u005f\u005fvoid_window_controls .void-buttons{display:flex;gap:8px}#\u005f\u005fvoid_window_controls button{width:13px;height:13px;border:0;border-radius:50%;padding:0;cursor:pointer;background:#777}#\u005f\u005fvoid_window_controls button[data-action=close]{background:#ff5f57}#\u005f\u005fvoid_window_controls button[data-action=minimize]{background:#febc2e}#\u005f\u005fvoid_window_controls button[data-action=maximize]{background:#28c840}#\u005f\u005fvoid_window_controls button:focus-visible{outline:2px solid white;outline-offset:2px}`;
+    (document.head || document.documentElement).appendChild(style);
+    const bar = document.createElement('div');
+    bar.id = '__void_window_controls';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'Window controls');
+    const title = document.createElement('span');
+    title.className = 'void-title';
+    title.textContent = appTitle;
+    const buttons = document.createElement('span');
+    buttons.className = 'void-buttons';
+    [['close', 'Close'], ['minimize', 'Minimize'], ['maximize', 'Maximize']].forEach(([action, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.action = action;
+      button.setAttribute('aria-label', label);
+      button.addEventListener('click', (event) => {
+        event.preventDefault(); event.stopPropagation();
+        post(action === 'maximize' ? 'toggle-maximize' : action);
+      });
+      buttons.appendChild(button);
+    });
+    bar.append(title, buttons);
+    bar.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('button') || event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation();
+      post(event.detail > 1 ? 'toggle-maximize' : 'drag');
+    });
+    document.documentElement.appendChild(bar);
+  };
+  if (document.documentElement) mount();
+  else document.addEventListener('DOMContentLoaded', mount, {once:true});
+})();"#;
+
+#[cfg(not(target_os = "android"))]
+fn with_window_controls<'a>(
+    builder: WebViewBuilder<'a>,
+    proxy: EventLoopProxy<WindowAction>,
+    title: &str,
+) -> WebViewBuilder<'a> {
+    let title_json = serde_json::to_string(title).unwrap_or_else(|_| "\"VOID\"".to_string());
+    let script = WINDOW_CONTROLS_SCRIPT.replace("__VOID_APP_TITLE__", &title_json);
+
+    builder
+        .with_initialization_script(script)
+        .with_ipc_handler(move |request| {
+            let action = match request.body().as_str() {
+                "close" => WindowAction::Close,
+                "minimize" => WindowAction::Minimize,
+                "toggle-maximize" => WindowAction::ToggleMaximize,
+                "drag" => WindowAction::Drag,
+                _ => return,
+            };
+            let _ = proxy.send_event(action);
+        })
+}
+
+// Android owns the activity surface and has no desktop window-manager controls.
+#[cfg(target_os = "android")]
+fn with_window_controls<'a>(
+    builder: WebViewBuilder<'a>,
+    _proxy: EventLoopProxy<WindowAction>,
+    _title: &str,
+) -> WebViewBuilder<'a> {
+    builder
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -234,9 +317,11 @@ pub extern "C" fn init_void_android() {
 fn start_app(config: VoidConfig) -> wry::Result<()> {
     let title = non_empty(config.title).unwrap_or_else(|| "VOID".to_string());
 
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoopBuilder::<WindowAction>::with_user_event().build();
     #[allow(unused_mut)]
-    let mut window_builder = WindowBuilder::new().with_title(title);
+    let mut window_builder = WindowBuilder::new()
+        .with_title(title.clone())
+        .with_decorations(false);
 
     #[cfg(not(target_os = "android"))]
     if config.width.is_some() || config.height.is_some() {
@@ -249,11 +334,6 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         window_builder = window_builder.with_fullscreen(Some(Fullscreen::Borderless(None)));
     }
 
-    #[cfg(target_os = "macos")]
-    if config.hide_title_bar {
-        window_builder = window_builder.with_decorations(false);
-    }
-
     let window = window_builder
         .build(&event_loop)
         .expect("Failed to create window");
@@ -263,11 +343,15 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
     let _webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
         with_native_notification_bridge(
-            WebViewBuilder::new()
-                .with_user_agent(user_agent::current())
-                // Keep camera/microphone requests on the platform's normal
-                // permission path instead of implicitly granting them.
-                .with_permission_handler(|_| PermissionResponse::Default),
+            with_window_controls(
+                WebViewBuilder::new()
+                    .with_user_agent(user_agent::current())
+                    // Keep camera/microphone requests on the platform's normal
+                    // permission path instead of implicitly granting them.
+                    .with_permission_handler(|_| PermissionResponse::Default),
+                event_loop.create_proxy(),
+                &title,
+            ),
             notification_host(&target_url),
         )
         .with_url(&target_url)
@@ -279,9 +363,13 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let entry_url = format!("void://localhost/{entry_file}");
 
         let builder = with_native_notification_bridge(
-            WebViewBuilder::new()
-                .with_user_agent(user_agent::current())
-                .with_permission_handler(|_| PermissionResponse::Default),
+            with_window_controls(
+                WebViewBuilder::new()
+                    .with_user_agent(user_agent::current())
+                    .with_permission_handler(|_| PermissionResponse::Default),
+                event_loop.create_proxy(),
+                &title,
+            ),
             notification_host(&entry_url),
         );
 
@@ -322,12 +410,20 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        if let Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            *control_flow = ControlFlow::Exit;
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+            | Event::UserEvent(WindowAction::Close) => *control_flow = ControlFlow::Exit,
+            Event::UserEvent(WindowAction::Minimize) => window.set_minimized(true),
+            Event::UserEvent(WindowAction::ToggleMaximize) => {
+                window.set_maximized(!window.is_maximized())
+            }
+            Event::UserEvent(WindowAction::Drag) => {
+                let _ = window.drag_window();
+            }
+            _ => {}
         }
     });
 }
