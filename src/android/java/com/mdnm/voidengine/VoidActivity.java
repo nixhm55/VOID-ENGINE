@@ -29,6 +29,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
+import java.io.FileOutputStream;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -132,9 +133,23 @@ public final class VoidActivity extends NativeActivity {
 
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
+        copyPackagedConfig();
         super.onCreate(savedInstanceState);
         if (getActionBar() != null) {
             getActionBar().hide();
+        }
+    }
+
+    private void copyPackagedConfig() {
+        try (InputStream input = getAssets().open("void.json");
+             FileOutputStream output = openFileOutput("void.json", MODE_PRIVATE)) {
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+            }
+        } catch (Exception error) {
+            android.util.Log.w("VOID", "Could not copy packaged void.json", error);
         }
     }
     private boolean notificationPermissionRequestInFlight;

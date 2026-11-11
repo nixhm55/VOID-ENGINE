@@ -69,10 +69,10 @@ on:
         required: false
         default: false
       multi_arch:
-        description: Build a universal macOS binary
+        description: Use the universal macOS master binary
         type: boolean
         required: false
-        default: false
+        default: true
       windows_format:
         description: Windows packages to build
         type: choice
@@ -96,38 +96,6 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-
-      - name: Capture Cargo.lock fingerprint before app metadata changes
-        id: cargo-lock
-        run: echo "sha256=$(shasum -a 256 Cargo.lock | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ inputs.multi_arch && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
-
-      - name: Cache Rust dependencies, tools, and build artifacts
-        id: rust-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
-          restore-keys: |
-            rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-
-            rust-v6-macos-
-
-      - name: Install cargo-bundle
-        if: steps.rust-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-bundle
-
       - name: Configure app metadata
         id: configure
         env:
@@ -141,87 +109,23 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
         run: node scripts/configure-build.mjs
-
       - name: Discover and prepare app icon
         env:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Build macOS binary
+      - name: Download universal master binary
         env:
-          MULTI_ARCH: ${{ inputs.multi_arch }}
-        run: |
-          if [ "$MULTI_ARCH" = "true" ]; then
-            cargo build --release --bin void --target x86_64-apple-darwin
-            cargo build --release --bin void --target aarch64-apple-darwin
-            mkdir -p target/release
-            lipo -create -output target/release/void \
-              target/x86_64-apple-darwin/release/void \
-              target/aarch64-apple-darwin/release/void
-          else
-            cargo build --release --bin void
-          fi
-
+          MASTER_BINARY_ASSET: void-macos-universal
+          MASTER_BINARY_OUTPUT: target/master/void
+        run: node scripts/download-master-binary.mjs
       - name: Package macOS app and DMG
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p output dmg_staging
-          if command -v cargo-bundle >/dev/null 2>&1 && cargo bundle --release --bin void --format osx --binary-path target/release/void; then
-            bundle_path=$(find target/release/bundle/osx -maxdepth 1 -name '*.app' -print -quit)
-            test -n "$bundle_path"
-            staged_app="dmg_staging/${APP_NAME}.app"
-            cp -R "$bundle_path" "$staged_app"
-            mkdir -p "$staged_app/Contents/Resources" "$staged_app/Contents/MacOS"
-            cp void.json "$staged_app/Contents/Resources/void.json"
-            cp void.json "$staged_app/Contents/MacOS/void.json"
-          else
-            app_contents="dmg_staging/${APP_NAME}.app/Contents"
-            mkdir -p "$app_contents/MacOS" "$app_contents/Resources/AppIcon.iconset"
-            cp target/release/void "$app_contents/MacOS/${APP_NAME}"
-            cp void.json "$app_contents/MacOS/void.json"
-            cp void.json "$app_contents/Resources/void.json"
-            chmod +x "$app_contents/MacOS/${APP_NAME}"
-            for size in 16 32 128 256 512; do
-              sips -z "$size" "$size" branding/icon.png --out "$app_contents/Resources/AppIcon.iconset/icon_${size}x${size}.png" >/dev/null
-            done
-            sips -z 32 32 branding/icon.png --out "$app_contents/Resources/AppIcon.iconset/icon_16x16@2x.png" >/dev/null
-            sips -z 64 64 branding/icon.png --out "$app_contents/Resources/AppIcon.iconset/icon_32x32@2x.png" >/dev/null
-            sips -z 256 256 branding/icon.png --out "$app_contents/Resources/AppIcon.iconset/icon_128x128@2x.png" >/dev/null
-            sips -z 512 512 branding/icon.png --out "$app_contents/Resources/AppIcon.iconset/icon_256x256@2x.png" >/dev/null
-            sips -z 1024 1024 branding/icon.png --out "$app_contents/Resources/AppIcon.iconset/icon_512x512@2x.png" >/dev/null
-            iconutil -c icns "$app_contents/Resources/AppIcon.iconset" -o "$app_contents/Resources/AppIcon.icns"
-            cat > "$app_contents/Info.plist" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>${APP_NAME}</string>
-            <key>CFBundleIdentifier</key><string>com.void.${APP_SLUG}</string>
-            <key>CFBundleName</key><string>${APP_NAME}</string>
-            <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
-            <key>CFBundleIconFile</key><string>AppIcon</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
-            <key>CFBundleVersion</key><string>${APP_VERSION}</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          EOF
-            echo -n 'APPL????' > "$app_contents/PkgInfo"
-          fi
-
-          info_plist="dmg_staging/${APP_NAME}.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Add :NSCameraUsageDescription string VOID needs camera access for websites you choose to use.' "$info_plist" 2>/dev/null \
-            || /usr/libexec/PlistBuddy -c 'Set :NSCameraUsageDescription VOID needs camera access for websites you choose to use.' "$info_plist"
-          /usr/libexec/PlistBuddy -c 'Add :NSMicrophoneUsageDescription string VOID needs microphone access for websites you choose to use.' "$info_plist" 2>/dev/null \
-            || /usr/libexec/PlistBuddy -c 'Set :NSMicrophoneUsageDescription VOID needs microphone access for websites you choose to use.' "$info_plist"
-          codesign --force --deep --sign - "dmg_staging/${APP_NAME}.app"
-          ln -s /Applications dmg_staging/Applications
-          hdiutil create -volname "$APP_NAME" -srcfolder dmg_staging -ov -format UDZO "output/${APP_SLUG}.dmg"
-
+          MASTER_BINARY_PATH: target/master/void
+        run: node scripts/package-macos-dmg.mjs
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.configure.outputs.app_slug }}-macos-dmg
@@ -234,55 +138,6 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
-
-      - name: Capture Cargo.lock fingerprint before app metadata changes
-        id: cargo-lock
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash -Path Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
-          "sha256=$hash" >> $env:GITHUB_OUTPUT
-
-      - name: Set up MSVC and Windows SDK tools
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies, tools, and build artifacts
-        id: rust-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: rust-v6-windows-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
-          restore-keys: |
-            rust-v6-windows-${{ steps.rust.outputs.cachekey }}-
-            rust-v6-windows-
-
-      - name: Install cargo-wix
-        if: ${{ (inputs.windows_format == 'msi' || inputs.windows_format == 'both') && steps.rust-cache.outputs.cache-hit != 'true' }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-wix
-
-      - name: Ensure WiX Toolset and cargo-wix are available
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
-        shell: pwsh
-        run: |
-          if (-not (Get-Command cargo-wix.exe -ErrorAction SilentlyContinue)) {
-            cargo install cargo-wix --locked
-          }
-          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
-            $wixBin = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'WiX Toolset v3.14\bin'
-            if (Test-Path (Join-Path $wixBin 'candle.exe')) { Add-Content $env:GITHUB_PATH $wixBin }
-            else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
-          }
-
       - name: Configure app metadata
         id: configure
         env:
@@ -296,71 +151,59 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
         run: node scripts/configure-build.mjs
-
       - name: Discover and prepare app icon
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
         env:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Build Windows binary
-        run: cargo build --release --bin void
-
-      - name: Package Windows executable
+      - name: Download Windows master binary
+        env:
+          MASTER_BINARY_ASSET: void-windows-x86_64.exe
+          MASTER_BINARY_OUTPUT: target/master/void.exe
+        run: node scripts/download-master-binary.mjs
+      - name: Apply per-app Windows executable icon
+        shell: pwsh
+        run: ./scripts/set-windows-icon.ps1 -Executable target/master/void.exe -IconFile branding/app.ico
+      - name: Package Windows executable and config
         if: ${{ inputs.windows_format == 'exe' || inputs.windows_format == 'both' }}
         env:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force output | Out-Null
-          Copy-Item target/release/void.exe "output/$env:APP_SLUG.exe"
-
+          Copy-Item -Force target/master/void.exe "output/$($env:APP_SLUG).exe"
+          Copy-Item -Force void.json "output/$($env:APP_SLUG).json"
+      - name: Ensure WiX Toolset is available
+        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $wixBin = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'WiX Toolset v3.14/bin'
+            if (Test-Path (Join-Path $wixBin 'candle.exe')) { Add-Content $env:GITHUB_PATH $wixBin }
+            else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
+          }
       - name: Package Windows MSI
         if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+          MASTER_BINARY_PATH: target/master/void.exe
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $productName = if ([string]::IsNullOrWhiteSpace($env:APP_NAME)) { 'VOID Engine' } else { $env:APP_NAME.Trim() }
-          New-Item -ItemType Directory -Force output | Out-Null
-
-          cargo wix init --force --product-name $productName --product-icon branding/app.ico
-          if ($LASTEXITCODE -ne 0) { throw "cargo wix init failed with exit code $LASTEXITCODE" }
-
-          $wxsPath = Join-Path $PWD 'wix/main.wxs'
-          if (-not (Test-Path -LiteralPath $wxsPath)) { throw "cargo wix did not create $wxsPath" }
-
-          [xml]$wxs = Get-Content -LiteralPath $wxsPath -Raw
-          $product = $wxs.SelectSingleNode("//*[local-name()='Product']")
-          if ($null -eq $product) { throw 'Could not find the WiX Product element in wix/main.wxs' }
-          $product.SetAttribute('Name', $productName)
-          $wxs.Save($wxsPath)
-
-          [xml]$verifiedWxs = Get-Content -LiteralPath $wxsPath -Raw
-          $verifiedProduct = $verifiedWxs.SelectSingleNode("//*[local-name()='Product']")
-          if ($null -eq $verifiedProduct -or [string]::IsNullOrWhiteSpace($verifiedProduct.GetAttribute('Name'))) {
-            throw 'WiX Product/@Name is empty after applying the fallback name.'
-          }
-
-          $msiPath = "output/$($env:APP_SLUG).msi"
-          cargo wix --no-build --nocapture --output $msiPath
-          if ($LASTEXITCODE -ne 0) { throw "cargo wix failed with exit code $LASTEXITCODE" }
-
+        run: ./scripts/package-windows-msi.ps1
       - uses: actions/upload-artifact@v7
         if: ${{ inputs.windows_format == 'exe' || inputs.windows_format == 'both' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-exe
-          path: output/*.exe
+          path: |
+            output/${{ steps.configure.outputs.app_slug }}.exe
+            output/${{ steps.configure.outputs.app_slug }}.json
           if-no-files-found: error
-
       - uses: actions/upload-artifact@v7
         if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-msi
-          path: output/*.msi
+          path: output/${{ steps.configure.outputs.app_slug }}.msi
           if-no-files-found: error
 
   build-linux:
@@ -373,81 +216,6 @@ jobs:
         format: ${{ fromJSON(inputs.linux_format == 'both' && '["deb","appimage"]' || format('["{0}"]', inputs.linux_format)) }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Capture Cargo.lock fingerprint before app metadata changes
-        id: cargo-lock
-        run: echo "sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies, tools, and build artifacts
-        id: rust-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: rust-v7-linux-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
-          restore-keys: |
-            rust-v6-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-
-            rust-v6-linux-
-
-      - name: Cache Linux apt snapshot and archives
-        id: apt-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            .cache/linux-apt-rootfs.tar.zst
-            /var/cache/apt/archives
-          key: ubuntu-24.04-apt-snapshot-v3
-          restore-keys: |
-            ubuntu-24.04-apt-snapshot-
-
-      - name: Restore pre-extracted Linux apt snapshot
-        if: steps.apt-cache.outputs.cache-hit == 'true'
-        run: |
-          if [ -f .cache/linux-apt-rootfs.tar.zst ]; then
-            sudo tar -I "zstd -T0" -xf .cache/linux-apt-rootfs.tar.zst -C /
-            sudo ldconfig
-          fi
-
-      - name: Install Linux build dependencies
-        env:
-          APPIMAGE_FORMAT: ${{ matrix.format == 'appimage' }}
-        run: |
-          set -euo pipefail
-          if command -v gcc >/dev/null 2>&1 \
-            && command -v pkg-config >/dev/null 2>&1 \
-            && pkg-config --exists webkit2gtk-4.1 \
-            && { [ "$APPIMAGE_FORMAT" != "true" ] || command -v convert >/dev/null 2>&1; }; then
-            exit 0
-          fi
-          sudo rm -f /etc/apt/apt.conf.d/docker-clean /var/lib/dpkg/info/man-db.postinst
-          ls /var/lib/dpkg/info/*.list > /tmp/dpkg-before.txt
-          if compgen -G "/var/cache/apt/archives/*.deb" > /dev/null; then
-            sudo dpkg --force-all -i /var/cache/apt/archives/*.deb || sudo apt-get -o APT::Keep-Downloaded-Packages=true install -y -f --no-install-recommends
-          else
-            sudo apt-get -o APT::Keep-Downloaded-Packages=true update -qq
-            sudo apt-get -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev libfuse2 imagemagick
-          fi
-          ls /var/lib/dpkg/info/*.list > /tmp/dpkg-after.txt
-          comm -13 <(sort /tmp/dpkg-before.txt) <(sort /tmp/dpkg-after.txt) | xargs cat | sort -u | while IFS= read -r p; do
-            if [ -e "$p" ] || [ -L "$p" ]; then
-              [ ! -d "$p" ] && echo "$p"
-            fi
-          done > /tmp/new-files.txt
-          echo "/var/lib/dpkg/status" >> /tmp/new-files.txt
-          echo "/var/lib/dpkg/info" >> /tmp/new-files.txt
-          echo "/etc/alternatives" >> /tmp/new-files.txt
-          mkdir -p .cache
-          sudo tar -I "zstd -1 -T0" -cf .cache/linux-apt-rootfs.tar.zst --files-from=/tmp/new-files.txt 2>/dev/null || true
-          sudo chown -R "$USER:$USER" .cache
-
       - name: Configure app metadata
         id: configure
         env:
@@ -461,37 +229,48 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
         run: node scripts/configure-build.mjs
-
       - name: Discover and prepare app icon
         env:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
+      - name: Download Linux master binary
+        env:
+          MASTER_BINARY_ASSET: void-linux-x86_64
+          MASTER_BINARY_OUTPUT: target/master/void
+        run: node scripts/download-master-binary.mjs
+      - name: Package Debian archive
+        if: ${{ matrix.format == 'deb' }}
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+        run: bash scripts/package-linux-deb.sh target/master/void "output/${{ steps.configure.outputs.app_slug }}.deb"
+      - name: Cache minimal Linux AppImage dependency
+        if: ${{ matrix.format == 'appimage' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/linux-apt-archives
+          key: ubuntu-24.04-appimage-fuse2-v1
+      - name: Install FUSE runtime only when needed
+        if: ${{ matrix.format == 'appimage' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/linux-apt-archives
+          sudo cp -n .cache/linux-apt-archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          if ! ldconfig -p | grep -q 'libfuse.so.2'; then
+            sudo rm -f /etc/apt/apt.conf.d/docker-clean
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends --download-only libfuse2
+            cp -n /var/cache/apt/archives/*.deb .cache/linux-apt-archives/ 2>/dev/null || true
+            sudo apt-get install -y --no-install-recommends libfuse2
+          fi
       - name: Cache AppImage tool
         if: ${{ matrix.format == 'appimage' }}
         uses: actions/cache@v4
         with:
           path: .cache/appimagetool-x86_64.AppImage
-          key: appimagetool-x86_64-v1
-
-      - name: Install cargo-deb
-        if: ${{ matrix.format == 'deb' && steps.rust-cache.outputs.cache-hit != 'true' }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deb
-
-      - name: Build Linux binary
-        run: cargo build --release --bin void
-
-      - name: Package Debian archive
-        if: ${{ matrix.format == 'deb' }}
-        env:
-          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
-        run: |
-          mkdir -p output
-          cargo deb --no-build -p void -o "output/${APP_SLUG}.deb"
-
+          key: appimagetool-x86_64-v2
       - name: Package Linux AppImage
         if: ${{ matrix.format == 'appimage' }}
         env:
@@ -499,11 +278,11 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
         run: |
           set -euo pipefail
-          mkdir -p output AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-          cp target/release/void "AppDir/usr/bin/${APP_SLUG}"
-          cp void.json AppDir/usr/bin/void.json
-          convert branding/icon.png -resize 256x256 "AppDir/${APP_SLUG}.png"
-          cp "AppDir/${APP_SLUG}.png" "AppDir/usr/share/icons/hicolor/256x256/apps/${APP_SLUG}.png"
+          mkdir -p output AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps .cache
+          install -m 0755 target/master/void "AppDir/usr/bin/${APP_SLUG}"
+          install -m 0644 void.json "AppDir/usr/bin/${APP_SLUG}.json"
+          cp branding/icon.png "AppDir/${APP_SLUG}.png"
+          cp branding/icon.png "AppDir/usr/share/icons/hicolor/256x256/apps/${APP_SLUG}.png"
           cat > "AppDir/${APP_SLUG}.desktop" <<EOF
           [Desktop Entry]
           Type=Application
@@ -519,14 +298,14 @@ jobs:
           HERE="\$(dirname "\$(readlink -f "\$0")")"
           exec "\$HERE/usr/bin/${APP_SLUG}" "\$@"
           EOF
-          chmod +x "AppDir/usr/bin/${APP_SLUG}" AppDir/AppRun
-          mkdir -p .cache
+          chmod +x AppDir/AppRun
           if [ ! -f .cache/appimagetool-x86_64.AppImage ]; then
-            wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O .cache/appimagetool-x86_64.AppImage
+            curl --fail --location --silent --show-error \
+              https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+              -o .cache/appimagetool-x86_64.AppImage
           fi
           chmod +x .cache/appimagetool-x86_64.AppImage
           ARCH=x86_64 .cache/appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir "output/${APP_SLUG}.AppImage"
-
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.configure.outputs.app_slug }}-linux-${{ matrix.format }}
@@ -538,59 +317,10 @@ jobs:
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-24.04
     env:
-      WRY_ANDROID_PACKAGE: com.void.void_engine
-      WRY_ANDROID_LIBRARY: void
       CARGO_APK_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
       CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
     steps:
       - uses: actions/checkout@v7
-
-      - name: Capture Cargo.lock fingerprint before app metadata changes
-        id: cargo-lock
-        run: echo "sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Java
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Rust stable toolchain
-        id: rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Cache Rust dependencies, tools, and build artifacts
-        id: rust-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: rust-v6-android-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
-          restore-keys: |
-            rust-v6-android-${{ steps.rust.outputs.cachekey }}-
-            rust-v6-android-
-
-      - name: Cache Android SDK platform, build tools, and debug keystore
-        uses: actions/cache@v4
-        with:
-          path: |
-            /usr/local/lib/android/sdk/platforms/android-33
-            /usr/local/lib/android/sdk/build-tools/34.0.0
-            ~/.android/debug.keystore
-          key: android-sdk-platform-33-build-tools-34.0.0-v2
-
-      - name: Install cargo-apk
-        if: steps.rust-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-apk
-
       - name: Configure app metadata
         id: configure
         env:
@@ -604,33 +334,54 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
         run: node scripts/configure-build.mjs
-
       - name: Discover and prepare app icon
         env:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Build and package Android APK
-        env:
-          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+      - name: Cache Android SDK platform, build tools, and signing key
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/android/sdk/platforms/android-33
+            /usr/local/lib/android/sdk/build-tools/34.0.0
+            ~/.android/debug.keystore
+          key: android-sdk-platform-33-build-tools-34.0.0-v3
+      - name: Ensure Android packaging tools and signing key
         run: |
-          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          if [ ! -d "$ANDROID_HOME/platforms/android-33" ] \
-            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/d8" ] \
-            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" ] \
-            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]; then
-            (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;34.0.0"
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [[ ! -f "$ANDROID_HOME/platforms/android-33/android.jar" \
+            || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
+            || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+              "platforms;android-33" "build-tools;34.0.0"
           fi
-          mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
+          mkdir -p ~/.android target/master
+          if [[ ! -f ~/.android/debug.keystore ]]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname 'CN=Android Debug,O=Android,C=US' -noprompt
           fi
-          cargo apk build --lib --release
-          bash scripts/package-android-apk.sh target/release/apk/void.apk
-          mkdir -p output
-          cp target/release/apk/void.apk "output/${APP_SLUG}.apk"
-
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+      - name: Cache Android APK repackager
+        uses: actions/cache@v4
+        with:
+          path: .cache/apktool-3.0.3.jar
+          key: apktool-3.0.3-dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423
+      - name: Download Android master APK
+        env:
+          MASTER_BINARY_ASSET: void-android-template.apk
+          MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
+        run: node scripts/download-master-binary.mjs
+      - name: Repackage app-specific Android APK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
+          APP_VERSION: ${{ inputs.version }}
+        run: bash scripts/package-android-master.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.configure.outputs.app_slug }}-android-apk

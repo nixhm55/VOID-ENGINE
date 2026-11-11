@@ -203,14 +203,17 @@ fn non_empty(opt: Option<String>) -> Option<String> {
 }
 
 fn load_config() -> VoidConfig {
-    let mut candidate_paths = vec![PathBuf::from("void.json")];
-
+    let mut candidate_paths = Vec::new();
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
+            if let Some(exe_stem) = exe_path.file_stem() {
+                candidate_paths.push(exe_dir.join(exe_stem).with_extension("json"));
+            }
             candidate_paths.push(exe_dir.join("void.json"));
             candidate_paths.push(exe_dir.join("../Resources/void.json"));
         }
     }
+    candidate_paths.push(PathBuf::from("void.json"));
 
     for path in candidate_paths {
         if let Ok(content) = fs::read_to_string(&path) {

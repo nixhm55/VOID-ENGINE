@@ -21,6 +21,9 @@ mod user_agent;
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
 const BUNDLED_VOID_JSON: &str = include_str!("../void.json");
 
+#[cfg(target_os = "android")]
+static ANDROID_FILES_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 #[derive(Deserialize, Default, Debug)]
 pub struct VoidConfig {
     pub url: Option<String>,
@@ -34,6 +37,15 @@ pub struct VoidConfig {
 }
 
 fn load_config() -> VoidConfig {
+    #[cfg(target_os = "android")]
+    if let Some(files_dir) = ANDROID_FILES_DIR.get() {
+        if let Ok(content) = fs::read_to_string(files_dir.join("void.json")) {
+            if let Ok(cfg) = serde_json::from_str::<VoidConfig>(&content) {
+                return cfg;
+            }
+        }
+    }
+
     if let Ok(content) = fs::read_to_string("void.json") {
         if let Ok(cfg) = serde_json::from_str::<VoidConfig>(&content) {
             return cfg;
@@ -258,6 +270,13 @@ pub unsafe extern "C" fn ANativeActivity_onCreate(
 
     static NDK_INIT: std::sync::Once = std::sync::Once::new();
     if let Some(act) = activity.as_ref() {
+        if !act.internal_data_path.is_null() {
+            let data_dir = std::ffi::CStr::from_ptr(act.internal_data_path)
+                .to_string_lossy()
+                .into_owned();
+            let _ = ANDROID_FILES_DIR.set(PathBuf::from(data_dir));
+        }
+
         NDK_INIT.call_once(|| {
             ndk_context::initialize_android_context(act.vm, act.clazz);
         });

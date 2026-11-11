@@ -1,0 +1,175 @@
+name: Publish VOID master binaries
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  master-macos:
+    name: Build macOS universal master binary
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: master-macos-universal-${{ steps.rust.outputs.cachekey }}
+          cache-targets: true
+      - name: Build both macOS architectures
+        run: |
+          cargo build --release --bin void --target x86_64-apple-darwin
+          cargo build --release --bin void --target aarch64-apple-darwin
+          mkdir -p output
+          lipo -create -output output/void-macos-universal \
+            target/x86_64-apple-darwin/release/void \
+            target/aarch64-apple-darwin/release/void
+          chmod +x output/void-macos-universal
+      - uses: actions/upload-artifact@v7
+        with:
+          name: master-macos
+          path: output/void-macos-universal
+          if-no-files-found: error
+
+  master-windows:
+    name: Build Windows master binary
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: master-windows-x64-${{ steps.rust.outputs.cachekey }}
+          cache-targets: true
+      - name: Build Windows master binary
+        run: |
+          cargo build --release --bin void
+          New-Item -ItemType Directory -Force output | Out-Null
+          Copy-Item target/release/void.exe output/void-windows-x86_64.exe
+        shell: pwsh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: master-windows
+          path: output/void-windows-x86_64.exe
+          if-no-files-found: error
+
+  master-linux:
+    name: Build Linux master binary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install native WebKit build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: master-linux-x64-${{ steps.rust.outputs.cachekey }}
+          cache-targets: true
+      - name: Build Linux master binary
+        run: |
+          cargo build --release --bin void
+          mkdir -p output
+          cp target/release/void output/void-linux-x86_64
+          chmod +x output/void-linux-x86_64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: master-linux
+          path: output/void-linux-x86_64
+          if-no-files-found: error
+
+  master-android:
+    name: Build Android master APK
+    runs-on: ubuntu-24.04
+    env:
+      WRY_ANDROID_PACKAGE: com.void.void
+      WRY_ANDROID_LIBRARY: void
+      CARGO_APK_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
+      CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: master-android-arm64-${{ steps.rust.outputs.cachekey }}
+          cache-targets: true
+      - name: Prepare generic launcher resources
+        run: node scripts/prepare-branding.mjs
+      - name: Ensure Android SDK and debug signing key
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          if [[ ! -f "$ANDROID_HOME/platforms/android-33/android.jar" \
+            || ! -x "$ANDROID_HOME/build-tools/34.0.0/d8" \
+            || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
+            || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;34.0.0"
+          fi
+          mkdir -p ~/.android
+          if [[ ! -f ~/.android/debug.keystore ]]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname 'CN=Android Debug,O=Android,C=US' -noprompt
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-apk
+      - name: Build generic Android template
+        run: |
+          cargo apk build --lib --release
+          bash scripts/package-android-apk.sh target/release/apk/void.apk
+          mkdir -p output
+          cp target/release/apk/void.apk output/void-android-template.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: master-android
+          path: output/void-android-template.apk
+          if-no-files-found: error
+
+  publish-master-release:
+    name: Publish reusable platform binaries
+    runs-on: ubuntu-24.04
+    needs: [master-macos, master-windows, master-linux, master-android]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: master-*
+          path: master-assets
+          merge-multiple: true
+      - name: Publish immutable master-binary release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -f master-assets/void-macos-universal
+          test -f master-assets/void-windows-x86_64.exe
+          test -f master-assets/void-linux-x86_64
+          test -f master-assets/void-android-template.apk
+          tag="engine-master-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}"
+          gh release create "$tag" master-assets/* --repo "$GH_REPO" --title "VOID master binaries $tag" \
+            --notes "Reusable engine binaries for app-specific packaging. Source: $GITHUB_SHA" --target "$GITHUB_SHA" --latest
