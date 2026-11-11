@@ -18,6 +18,8 @@ use wry::{
     WebViewBuilder,
 };
 
+mod user_agent;
+
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
 const BUNDLED_VOID_JSON: &str = include_str!("../void.json");
 const VOID_GLYPHS: [[&str; 5]; 4] = [
@@ -236,7 +238,10 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
     let _webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
-        WebViewBuilder::new().with_url(&target_url).build(&window)?
+        WebViewBuilder::new()
+            .with_user_agent(user_agent::current())
+            .with_url(&target_url)
+            .build(&window)?
     } else {
         let asset_target =
             non_empty(config.assets).unwrap_or_else(|| "dist/index.html".to_string());
@@ -244,6 +249,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let entry_url = format!("void://localhost/{entry_file}");
 
         WebViewBuilder::new()
+            .with_user_agent(user_agent::current())
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');
                 let rel_path = if raw_path.is_empty() {

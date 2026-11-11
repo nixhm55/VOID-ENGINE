@@ -1,9 +1,9 @@
+use serde::Deserialize;
 use std::{
     borrow::Cow,
     fs,
     path::{Path, PathBuf},
 };
-use serde::Deserialize;
 #[cfg(not(target_os = "android"))]
 use tao::dpi::LogicalSize;
 use tao::{
@@ -15,6 +15,8 @@ use wry::{
     http::{header::CONTENT_TYPE, Response, StatusCode},
     WebViewBuilder,
 };
+
+mod user_agent;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
 const BUNDLED_VOID_JSON: &str = include_str!("../void.json");
@@ -125,12 +127,9 @@ unsafe fn setup_native_activity_webview(
 
     // Release NativeActivity's raw surface & input queue takeover so Android's
     // View hierarchy renders the WebView and dispatches touch events without ANR.
-    if let Ok(window_val) = env.call_method(
-        activity_obj,
-        "getWindow",
-        "()Landroid/view/Window;",
-        &[],
-    ) {
+    if let Ok(window_val) =
+        env.call_method(activity_obj, "getWindow", "()Landroid/view/Window;", &[])
+    {
         if let Ok(window_obj) = window_val.l() {
             if !window_obj.is_null() {
                 let _ = env.call_method(
@@ -162,6 +161,15 @@ unsafe fn setup_native_activity_webview(
         &[],
     ) {
         if let Ok(settings) = settings_val.l() {
+            if let Ok(user_agent) = env.new_string(user_agent::current()) {
+                let user_agent_obj = JObject::from(user_agent);
+                let _ = env.call_method(
+                    &settings,
+                    "setUserAgentString",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&user_agent_obj)],
+                );
+            }
             let _ = env.call_method(
                 &settings,
                 "setJavaScriptEnabled",
@@ -174,12 +182,7 @@ unsafe fn setup_native_activity_webview(
                 "(Z)V",
                 &[JValue::Bool(1)],
             );
-            let _ = env.call_method(
-                &settings,
-                "setAllowFileAccess",
-                "(Z)V",
-                &[JValue::Bool(1)],
-            );
+            let _ = env.call_method(&settings, "setAllowFileAccess", "(Z)V", &[JValue::Bool(1)]);
         }
     }
 
@@ -295,6 +298,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
 
     let _webview = if is_remote_url(&target) {
         WebViewBuilder::new()
+            .with_user_agent(user_agent::current())
             .with_url(&target)
             .build(&window)?
     } else {
@@ -302,6 +306,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         let entry_url = format!("void://localhost/{entry_file}");
 
         WebViewBuilder::new()
+            .with_user_agent(user_agent::current())
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');
                 let rel_path = if raw_path.is_empty() {
