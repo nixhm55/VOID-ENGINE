@@ -103,13 +103,26 @@ jobs:
         with:
           targets: ${{ inputs.multi_arch && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
 
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies, tools, and build artifacts
+        id: rust-cache
+        uses: actions/cache@v4
         with:
-          shared-key: macos
-          cache-workspace-crates: true
-          cache-all-crates: true
-          save-if: true
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-v5-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-v5-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-
+            rust-v5-macos-
+
+      - name: Install cargo-bundle
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bundle
 
       - name: Configure app metadata
         id: configure
@@ -130,11 +143,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Install cargo-bundle
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-bundle
 
       - name: Build macOS binary
         env:
@@ -159,7 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output dmg_staging
-          if cargo bundle --release --bin void --format osx --binary-path target/release/void; then
+          if command -v cargo-bundle >/dev/null 2>&1 && cargo bundle --release --bin void --format osx --binary-path target/release/void; then
             bundle_path=$(find target/release/bundle/osx -maxdepth 1 -name '*.app' -print -quit)
             test -n "$bundle_path"
             staged_app="dmg_staging/${APP_NAME}.app"
@@ -230,13 +238,39 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies, tools, and build artifacts
+        id: rust-cache
+        uses: actions/cache@v4
         with:
-          shared-key: windows
-          cache-workspace-crates: true
-          cache-all-crates: true
-          save-if: true
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-v5-windows-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-v5-windows-${{ steps.rust.outputs.cachekey }}-
+            rust-v5-windows-
+
+      - name: Install cargo-wix
+        if: ${{ (inputs.windows_format == 'msi' || inputs.windows_format == 'both') && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-wix
+
+      - name: Ensure WiX Toolset and cargo-wix are available
+        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
+        shell: pwsh
+        run: |
+          if (-not (Get-Command cargo-wix.exe -ErrorAction SilentlyContinue)) {
+            cargo install cargo-wix --locked
+          }
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $wixBin = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'WiX Toolset v3.14\bin'
+            if (Test-Path (Join-Path $wixBin 'candle.exe')) { Add-Content $env:GITHUB_PATH $wixBin }
+            else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
+          }
 
       - name: Configure app metadata
         id: configure
@@ -258,22 +292,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Install cargo-wix
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-wix
-
-      - name: Ensure WiX Toolset is available
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
-        shell: pwsh
-        run: |
-          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
-            $wixBin = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'WiX Toolset v3.14\bin'
-            if (Test-Path (Join-Path $wixBin 'candle.exe')) { Add-Content $env:GITHUB_PATH $wixBin }
-            else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
-          }
 
       - name: Build Windows binary
         run: cargo build --release --bin void
@@ -349,57 +367,52 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: linux-${{ matrix.format }}
-          cache-workspace-crates: true
-          cache-all-crates: true
-          save-if: true
-
-      - name: Cache Linux apt packages
-        id: apt-cache
+      - name: Cache Rust dependencies, tools, and build artifacts
+        id: rust-cache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/void-apt-archives
-          key: ubuntu-24.04-apt-${{ matrix.format }}-v2
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-v5-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ubuntu-24.04-apt-${{ matrix.format }}-
-            ubuntu-24.04-apt-
+            rust-v5-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-
+            rust-v5-linux-
+
+      - name: Cache and restore Linux apt packages
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: build-essential pkg-config libwebkit2gtk-4.1-dev libfuse2 imagemagick
+          version: ubuntu-24.04-v1
+
+      - name: Cache Linux apt archives fallback
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ubuntu-24.04-apt-archives-${{ matrix.format }}-v2
+          restore-keys: |
+            ubuntu-24.04-apt-archives-
 
       - name: Install Linux build dependencies
         env:
-          APT_ARCHIVES: ${{ runner.temp }}/void-apt-archives
           APPIMAGE_FORMAT: ${{ matrix.format == 'appimage' }}
         run: |
           set -euo pipefail
-          mkdir -p "$APT_ARCHIVES/partial"
+          if command -v gcc >/dev/null 2>&1 \
+            && command -v pkg-config >/dev/null 2>&1 \
+            && pkg-config --exists webkit2gtk-4.1 \
+            && { [ "$APPIMAGE_FORMAT" != "true" ] || command -v convert >/dev/null 2>&1; }; then
+            exit 0
+          fi
           sudo rm -f /etc/apt/apt.conf.d/docker-clean /var/lib/dpkg/info/man-db.postinst
-          if compgen -G "$APT_ARCHIVES/*.deb" > /dev/null; then
-            sudo dpkg --force-all -i "$APT_ARCHIVES"/*.deb || sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" -o APT::Keep-Downloaded-Packages=true install -y -f --no-install-recommends
+          if compgen -G "/var/cache/apt/archives/*.deb" > /dev/null; then
+            sudo dpkg --force-all -i /var/cache/apt/archives/*.deb || sudo apt-get -o APT::Keep-Downloaded-Packages=true install -y -f --no-install-recommends
           else
-            missing=()
-            for tool in gcc g++ make pkg-config; do
-              if ! command -v "$tool" >/dev/null 2>&1; then
-                missing+=(build-essential pkg-config)
-                break
-              fi
-            done
-            if ! dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev 2>/dev/null | grep -q 'install ok installed'; then
-              missing+=(libwebkit2gtk-4.1-dev)
-            fi
-            if [ "$APPIMAGE_FORMAT" = "true" ]; then
-              if ! dpkg-query -W -f='${Status}' libfuse2 2>/dev/null | grep -q 'install ok installed'; then
-                missing+=(libfuse2)
-              fi
-              if ! command -v convert >/dev/null 2>&1; then
-                missing+=(imagemagick)
-              fi
-            fi
-            if ((${#missing[@]})); then
-              sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" -o APT::Keep-Downloaded-Packages=true update -qq
-              sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends "${missing[@]}"
-            fi
+            sudo apt-get -o APT::Keep-Downloaded-Packages=true update -qq
+            sudo apt-get -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev libfuse2 imagemagick
           fi
 
       - name: Configure app metadata
@@ -430,7 +443,7 @@ jobs:
           key: appimagetool-x86_64-v1
 
       - name: Install cargo-deb
-        if: ${{ matrix.format == 'deb' }}
+        if: ${{ matrix.format == 'deb' && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb
@@ -492,7 +505,6 @@ jobs:
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-24.04
     env:
-      # Set at job level so Swatinem/rust-cache hashes the exact same environment on restore and save
       WRY_ANDROID_PACKAGE: com.void.void_engine
       WRY_ANDROID_LIBRARY: void
       CARGO_APK_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
@@ -512,13 +524,20 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Rust dependencies, tools, and build artifacts
+        id: rust-cache
+        uses: actions/cache@v4
         with:
-          shared-key: android
-          cache-workspace-crates: true
-          cache-all-crates: true
-          save-if: true
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-v5-android-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-v5-android-${{ steps.rust.outputs.cachekey }}-
+            rust-v5-android-
 
       - name: Cache Android SDK platform, build tools, and debug keystore
         uses: actions/cache@v4
@@ -528,6 +547,12 @@ jobs:
             /usr/local/lib/android/sdk/build-tools/34.0.0
             ~/.android/debug.keystore
           key: android-sdk-platform-33-build-tools-34.0.0-v2
+
+      - name: Install cargo-apk
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-apk
 
       - name: Configure app metadata
         id: configure
@@ -548,11 +573,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Install cargo-apk
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-apk
 
       - name: Build and package Android APK
         env:
