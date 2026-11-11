@@ -108,6 +108,8 @@ jobs:
         with:
           shared-key: macos
           cache-workspace-crates: true
+          cache-all-crates: true
+          save-if: true
 
       - name: Configure app metadata
         id: configure
@@ -221,6 +223,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up MSVC and Windows SDK tools
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install Rust stable toolchain
         id: rust
         uses: dtolnay/rust-toolchain@stable
@@ -230,6 +235,8 @@ jobs:
         with:
           shared-key: windows
           cache-workspace-crates: true
+          cache-all-crates: true
+          save-if: true
 
       - name: Configure app metadata
         id: configure
@@ -251,9 +258,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Set up MSVC and Windows SDK tools
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install cargo-wix
         if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
@@ -348,8 +352,55 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux
+          shared-key: linux-${{ matrix.format }}
           cache-workspace-crates: true
+          cache-all-crates: true
+          save-if: true
+
+      - name: Cache Linux apt packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/void-apt-archives
+          key: ubuntu-24.04-apt-${{ matrix.format }}-v2
+          restore-keys: |
+            ubuntu-24.04-apt-${{ matrix.format }}-
+            ubuntu-24.04-apt-
+
+      - name: Install Linux build dependencies
+        env:
+          APT_ARCHIVES: ${{ runner.temp }}/void-apt-archives
+          APPIMAGE_FORMAT: ${{ matrix.format == 'appimage' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$APT_ARCHIVES/partial"
+          sudo rm -f /etc/apt/apt.conf.d/docker-clean /var/lib/dpkg/info/man-db.postinst
+          if compgen -G "$APT_ARCHIVES/*.deb" > /dev/null; then
+            sudo dpkg --force-all -i "$APT_ARCHIVES"/*.deb || sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" -o APT::Keep-Downloaded-Packages=true install -y -f --no-install-recommends
+          else
+            missing=()
+            for tool in gcc g++ make pkg-config; do
+              if ! command -v "$tool" >/dev/null 2>&1; then
+                missing+=(build-essential pkg-config)
+                break
+              fi
+            done
+            if ! dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev 2>/dev/null | grep -q 'install ok installed'; then
+              missing+=(libwebkit2gtk-4.1-dev)
+            fi
+            if [ "$APPIMAGE_FORMAT" = "true" ]; then
+              if ! dpkg-query -W -f='${Status}' libfuse2 2>/dev/null | grep -q 'install ok installed'; then
+                missing+=(libfuse2)
+              fi
+              if ! command -v convert >/dev/null 2>&1; then
+                missing+=(imagemagick)
+              fi
+            fi
+            if ((${#missing[@]})); then
+              sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" -o APT::Keep-Downloaded-Packages=true update -qq
+              sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends "${missing[@]}"
+            fi
+          fi
 
       - name: Configure app metadata
         id: configure
@@ -370,34 +421,6 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-
-      - name: Install Linux build dependencies
-        env:
-          APPIMAGE_FORMAT: ${{ matrix.format == 'appimage' }}
-        run: |
-          set -euo pipefail
-          missing=()
-          for tool in gcc g++ make pkg-config; do
-            if ! command -v "$tool" >/dev/null 2>&1; then
-              missing+=(build-essential pkg-config)
-              break
-            fi
-          done
-          if ! dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev 2>/dev/null | grep -q 'install ok installed'; then
-            missing+=(libwebkit2gtk-4.1-dev)
-          fi
-          if [ "$APPIMAGE_FORMAT" = "true" ]; then
-            if ! dpkg-query -W -f='${Status}' libfuse2 2>/dev/null | grep -q 'install ok installed'; then
-              missing+=(libfuse2)
-            fi
-            if ! command -v convert >/dev/null 2>&1; then
-              missing+=(imagemagick)
-            fi
-          fi
-          if ((${#missing[@]})); then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends "${missing[@]}"
-          fi
 
       - name: Cache AppImage tool
         if: ${{ matrix.format == 'appimage' }}
@@ -468,6 +491,12 @@ jobs:
     name: Android APK
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-24.04
+    env:
+      # Set at job level so Swatinem/rust-cache hashes the exact same environment on restore and save
+      WRY_ANDROID_PACKAGE: com.void.void_engine
+      WRY_ANDROID_LIBRARY: void
+      CARGO_APK_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
+      CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
     steps:
       - uses: actions/checkout@v7
 
@@ -488,14 +517,17 @@ jobs:
         with:
           shared-key: android
           cache-workspace-crates: true
+          cache-all-crates: true
+          save-if: true
 
-      - name: Cache Android SDK platform and build tools
+      - name: Cache Android SDK platform, build tools, and debug keystore
         uses: actions/cache@v4
         with:
           path: |
             /usr/local/lib/android/sdk/platforms/android-33
             /usr/local/lib/android/sdk/build-tools/34.0.0
-          key: android-sdk-platform-33-build-tools-34.0.0-v1
+            ~/.android/debug.keystore
+          key: android-sdk-platform-33-build-tools-34.0.0-v2
 
       - name: Configure app metadata
         id: configure
@@ -524,11 +556,6 @@ jobs:
 
       - name: Build and package Android APK
         env:
-          # This is Wry's generated JNI namespace, not the installed application ID.
-          WRY_ANDROID_PACKAGE: com.void.void_engine
-          WRY_ANDROID_LIBRARY: void
-          CARGO_APK_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
-          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
         run: |
           export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
