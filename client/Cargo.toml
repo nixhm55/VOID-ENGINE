@@ -1,0 +1,27 @@
+[package]
+name = "void-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny cloud-build trigger for VOID Engine"
+license = "MIT"
+autobins = false
+
+[[bin]]
+name = "void"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1.0"
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }
+
+[profile.cli-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[workspace]

@@ -23,7 +23,7 @@ on:
         type: boolean
         required: false
         default: true
-      url:
+      target_url:
         description: Website URL (blank loads the bundled local site)
         type: string
         required: false
@@ -101,7 +101,7 @@ jobs:
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ANDROID_PACKAGE: ${{ inputs.android_package }}
           ICON_URL: ${{ inputs.icon_url }}
           APP_WIDTH: ${{ inputs.width }}
@@ -113,7 +113,7 @@ jobs:
 
       - name: Discover and prepare app icon
         env:
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
 
@@ -228,7 +228,7 @@ jobs:
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ANDROID_PACKAGE: ${{ inputs.android_package }}
           ICON_URL: ${{ inputs.icon_url }}
           APP_WIDTH: ${{ inputs.width }}
@@ -240,7 +240,7 @@ jobs:
 
       - name: Discover and prepare app icon
         env:
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
 
@@ -316,7 +316,7 @@ jobs:
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ANDROID_PACKAGE: ${{ inputs.android_package }}
           ICON_URL: ${{ inputs.icon_url }}
           APP_WIDTH: ${{ inputs.width }}
@@ -328,7 +328,7 @@ jobs:
 
       - name: Discover and prepare app icon
         env:
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
 
@@ -416,7 +416,7 @@ jobs:
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ANDROID_PACKAGE: ${{ inputs.android_package }}
           ICON_URL: ${{ inputs.icon_url }}
           APP_WIDTH: ${{ inputs.width }}
@@ -428,7 +428,7 @@ jobs:
 
       - name: Discover and prepare app icon
         env:
-          APP_URL: ${{ inputs.url }}
+          TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
 

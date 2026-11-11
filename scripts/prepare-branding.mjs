@@ -185,7 +185,7 @@ function parseIconLinks(html, pageUrl) {
 
 async function discoverIcon() {
   const explicit = (process.env.ICON_URL || '').trim();
-  const site = (process.env.APP_URL || '').trim();
+  const site = (process.env.TARGET_URL || process.env.APP_URL || '').trim();
   const candidates = [];
   if (explicit) candidates.push(explicit);
   if (site) {

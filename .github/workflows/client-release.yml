@@ -1,0 +1,55 @@
+name: Release VOID Cloud Client
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  release-client:
+    name: Cloud client (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            runner: macos-15
+            asset: void-macos
+            executable: void
+          - platform: Windows
+            runner: windows-2025
+            asset: void-windows.exe
+            executable: void.exe
+          - platform: Linux
+            runner: ubuntu-24.04
+            asset: void-linux
+            executable: void
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cloud client dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client -> client/target
+          shared-key: cloud-client-${{ matrix.platform }}
+
+      - name: Build cloud client
+        run: cargo build --locked --manifest-path client/Cargo.toml --profile cli-release --bin void
+
+      - name: Upload client to this GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ASSET: ${{ matrix.asset }}
+          CLIENT_EXECUTABLE: ${{ matrix.executable }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp "client/target/cli-release/${CLIENT_EXECUTABLE}" "output/${RELEASE_ASSET}"
+          gh release upload "$GITHUB_REF_NAME" "output/${RELEASE_ASSET}" --clobber

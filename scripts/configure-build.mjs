@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 
-const inputUrl = (process.env.APP_URL || '').trim();
+const inputUrl = (process.env.TARGET_URL || process.env.APP_URL || '').trim();
 const configuredName = (process.env.APP_NAME || '').trim();
+if (configuredName.length > 80 || /[\u0000-\u001f\u007f]/u.test(configuredName)) {
+  throw new Error('APP_NAME must be at most 80 characters and contain no control characters');
+}
 
 function titleFromUrl(value) {
   try {

@@ -1,23 +1,24 @@
 # VOID Engine
 
-Turn websites into lightweight desktop apps with Rust.
+VOID turns websites into lightweight native desktop and Android apps. The native app builds remain in the main `void` package; the separate `void-cli` package requests a branded cloud build and does not compile the app on the user's computer.
 
-## Install
+## Install the cloud client
 
-Install Rust and Cargo, then install VOID directly from the public repository:
+Download the matching `void-macos`, `void-windows.exe`, or `void-linux` executable from a published GitHub Release and place it somewhere on your `PATH`. The `Release VOID Cloud Client` workflow attaches these clients to each published release.
 
-```sh
-cargo install --git https://github.com/nixhm55/VOID-ENGINE --bin void --locked
-```
+Set `VOID_GITHUB_TOKEN` in your environment using a secret manager or a hidden-input prompt. The token needs **Actions: write** access to the build repository. Keep it out of shell history and source files.
 
-The first install builds the CLI for your computer. Cargo places the `void` command in its binary directory, usually `~/.cargo/bin`.
-
-## Use
+## Request a build
 
 ```sh
-void --help
-void https://example.com --name "VOID Test" --width 1000 --height 700
-void init
+void https://example.com --name "My App"
+void https://example.com --name "My App" --icon-url https://example.com/icon.png
 ```
 
-`void init` creates or updates a `void.json` file in the current directory.
+The client sends the URL, app name, and optional icon URL to the `build.yml` workflow on `main`, then prints the GitHub Actions run link. The workflow builds the platform packages in parallel; this phase returns the run link and does not yet wait for or download the resulting artifacts.
+
+The repository, workflow filename, and Git ref can be changed with `VOID_GITHUB_REPOSITORY`, `VOID_GITHUB_WORKFLOW`, and `VOID_GITHUB_REF`. See `void --help` for details.
+
+## Build locally for development
+
+The native wrapper can still be developed with Cargo from this repository. Its native runtime features and Android library are separate from the cloud client dependencies.
