@@ -123,17 +123,10 @@ jobs:
         with:
           targets: ${{ inputs.multi_arch && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: macos-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: macos-rust-${{ steps.rust.outputs.cachekey }}-
+          shared-key: macos
 
       - name: Install cargo-bundle
         uses: taiki-e/install-action@v2
@@ -166,9 +159,11 @@ jobs:
           if cargo bundle --release --bin void --format osx --binary-path target/release/void; then
             bundle_path=$(find target/release/bundle/osx -maxdepth 1 -name '*.app' -print -quit)
             test -n "$bundle_path"
-            cp -R "$bundle_path" "dmg_staging/${APP_NAME}.app"
-            cp void.json "dmg_staging/${APP_NAME}.app/Contents/Resources/void.json"
-            cp void.json "dmg_staging/${APP_NAME}.app/Contents/MacOS/void.json"
+            staged_app="dmg_staging/${APP_NAME}.app"
+            cp -R "$bundle_path" "$staged_app"
+            mkdir -p "$staged_app/Contents/Resources" "$staged_app/Contents/MacOS"
+            cp void.json "$staged_app/Contents/Resources/void.json"
+            cp void.json "$staged_app/Contents/MacOS/void.json"
           else
             app_contents="dmg_staging/${APP_NAME}.app/Contents"
             mkdir -p "$app_contents/MacOS" "$app_contents/Resources/AppIcon.iconset"
@@ -253,17 +248,13 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: windows-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: windows-rust-${{ steps.rust.outputs.cachekey }}-
+          shared-key: windows
+
+      - name: Set up MSVC and Windows SDK tools
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install cargo-wix
         if: ${{ matrix.format == 'msi' }}
@@ -354,17 +345,10 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: linux-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: linux-rust-${{ steps.rust.outputs.cachekey }}-
+          shared-key: linux
 
       - name: Install cargo-deb
         if: ${{ matrix.format == 'deb' }}
@@ -460,17 +444,10 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v5
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: android-rust-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: android-rust-${{ steps.rust.outputs.cachekey }}-
+          shared-key: android
 
       - name: Install cargo-apk
         uses: taiki-e/install-action@v2
