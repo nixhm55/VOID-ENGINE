@@ -93,8 +93,7 @@ jobs:
   build-macos:
     name: macOS DMG
     if: ${{ inputs.build_macos }}
-    # Use the Intel pool to avoid the ARM64 runner capacity bottleneck.
-    runs-on: macos-15-intel
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 

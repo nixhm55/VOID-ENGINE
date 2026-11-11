@@ -1,4 +1,10 @@
-use std::{env, fs, path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::{Command, ExitCode},
+    time::Duration,
+};
 
 use reqwest::{header, Client, Url};
 use serde_json::{json, Value};
@@ -35,7 +41,7 @@ fn usage() -> &'static str {
        VOID_GITHUB_REPOSITORY   Build repository (default: nixhm55/VOID-ENGINE)\n\
        VOID_GITHUB_WORKFLOW     Workflow file (default: build.yml)\n\
        VOID_GITHUB_REF          Branch or tag (default: main)\n\
-     Artifacts are saved as ZIP files in a new ./void-build-<name>-<run-id>/ folder."
+     Downloaded ZIPs and extracted packages are saved in the current folder."
 }
 
 fn parse_args() -> Result<ParseResult, String> {
@@ -243,7 +249,8 @@ async fn wait_for_run(
 ) -> Result<(), String> {
     let endpoint = api_endpoint(repository, &format!("actions/runs/{run_id}"));
     let started = tokio::time::Instant::now();
-    let mut previous_status = String::new();
+    let spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let mut tick = 0usize;
 
     loop {
         let response = github_get(client, token, &endpoint)
@@ -256,12 +263,25 @@ async fn wait_for_run(
             .and_then(Value::as_str)
             .unwrap_or("unknown");
 
-        if status != previous_status {
-            println!("Cloud build status: {status} ({run_url})");
-            previous_status = status.to_string();
-        }
+        let elapsed = started.elapsed().as_secs();
+        let label = match status {
+            "queued" | "requested" | "waiting" => "Waiting for a GitHub runner",
+            "in_progress" => "Building your app",
+            other => other,
+        };
+        print!(
+            "\r{} {} · {:02}:{:02}  {}",
+            spinner[tick % spinner.len()],
+            label,
+            elapsed / 60,
+            elapsed % 60,
+            run_url
+        );
+        let _ = io::stdout().flush();
+        tick += 1;
 
         if status == "completed" {
+            println!();
             let conclusion = run
                 .get("conclusion")
                 .and_then(Value::as_str)
@@ -271,6 +291,7 @@ async fn wait_for_run(
                     "cloud build finished with conclusion '{conclusion}': {run_url}"
                 ));
             }
+            println!("Build completed successfully.");
             return Ok(());
         }
 
@@ -284,12 +305,101 @@ async fn wait_for_run(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn extract_archive(archive: &Path, destination: &Path) -> Result<(), String> {
+    let status = Command::new("ditto")
+        .arg("-x")
+        .arg("-k")
+        .arg(archive)
+        .arg(destination)
+        .status()
+        .map_err(|error| format!("could not start macOS ZIP extractor (ditto): {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("macOS ZIP extraction failed with {status}"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn extract_archive(archive: &Path, destination: &Path) -> Result<(), String> {
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Expand-Archive -LiteralPath $env:VOID_ZIP_PATH -DestinationPath $env:VOID_DEST_PATH -Force",
+        ])
+        .env("VOID_ZIP_PATH", archive)
+        .env("VOID_DEST_PATH", destination)
+        .status()
+        .map_err(|error| format!("could not start Windows ZIP extractor: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Windows ZIP extraction failed with {status}"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn extract_archive(archive: &Path, destination: &Path) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for tool in ["unzip", "bsdtar"] {
+        let mut command = Command::new(tool);
+        if tool == "unzip" {
+            command
+                .args(["-o", "-q"])
+                .arg(archive)
+                .arg("-d")
+                .arg(destination);
+        } else {
+            command
+                .args(["-xf"])
+                .arg(archive)
+                .arg("-C")
+                .arg(destination);
+        }
+        match command.status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => failures.push(format!("{tool} exited with {status}")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("could not run {tool}: {error}")),
+        }
+    }
+
+    for python in ["python3", "python"] {
+        match Command::new(python)
+            .args(["-m", "zipfile", "-e"])
+            .arg(archive)
+            .arg(destination)
+            .status()
+        {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => failures.push(format!("{python} ZIP extraction exited with {status}")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("could not run {python}: {error}")),
+        }
+    }
+
+    let detail = if failures.is_empty() {
+        "no system ZIP extractor was found (install unzip or Python 3)".to_string()
+    } else {
+        failures.join("; ")
+    };
+    Err(format!("could not extract {}: {detail}", archive.display()))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn extract_archive(_archive: &Path, _destination: &Path) -> Result<(), String> {
+    Err("automatic ZIP extraction is supported on macOS, Windows, and Linux".to_string())
+}
+
 async fn download_artifacts(
     client: &Client,
     token: &str,
     repository: &str,
     run_id: u64,
-    app_name: &str,
 ) -> Result<PathBuf, String> {
     let endpoint = api_endpoint(
         repository,
@@ -305,10 +415,7 @@ async fn download_artifacts(
         .and_then(Value::as_array)
         .ok_or_else(|| "GitHub returned no artifact list for this cloud build".to_string())?;
     let output_dir = env::current_dir()
-        .map_err(|error| format!("could not read the current folder: {error}"))?
-        .join(format!("void-build-{}-{run_id}", safe_component(app_name)));
-    fs::create_dir_all(&output_dir)
-        .map_err(|error| format!("could not create {}: {error}", output_dir.display()))?;
+        .map_err(|error| format!("could not read the current folder: {error}"))?;
 
     let mut downloaded = 0usize;
     for artifact in artifacts {
@@ -323,7 +430,7 @@ async fn download_artifacts(
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("GitHub returned an invalid ID for artifact '{name}'"))?;
-        let destination = output_dir.join(format!("{}.zip", safe_component(name)));
+        let destination = output_dir.join(format!("{}-{run_id}.zip", safe_component(name)));
         let endpoint = api_endpoint(repository, &format!("actions/artifacts/{artifact_id}/zip"));
         println!("Downloading {name}...");
         let response = github_get(client, token, &endpoint)
@@ -344,12 +451,14 @@ async fn download_artifacts(
             .map_err(|error| format!("could not read artifact '{name}': {error}"))?;
         fs::write(&destination, &bytes)
             .map_err(|error| format!("could not save {}: {error}", destination.display()))?;
-        downloaded += 1;
         println!(
             "Saved {} ({:.1} MB)",
             destination.display(),
             bytes.len() as f64 / 1_000_000.0
         );
+        extract_archive(&destination, &output_dir)?;
+        downloaded += 1;
+        println!("Extracted {name} into {}", output_dir.display());
     }
 
     if downloaded == 0 {
@@ -445,9 +554,11 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
     println!("Started cloud build for {app_name}: {run_url}");
     wait_for_run(&client, token.trim(), &repository, run_id, run_url).await?;
     println!("Cloud build succeeded. Downloading artifacts...");
-    let output_dir =
-        download_artifacts(&client, token.trim(), &repository, run_id, &app_name).await?;
-    println!("All artifact ZIPs are in {}", output_dir.display());
+    let output_dir = download_artifacts(&client, token.trim(), &repository, run_id).await?;
+    println!(
+        "All downloaded ZIPs and extracted files are in {}",
+        output_dir.display()
+    );
     Ok(())
 }
 
