@@ -1,11 +1,11 @@
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    env,
-    fs,
+    env, fs,
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
-use clap::Parser;
-use serde::Deserialize;
 #[cfg(not(target_os = "android"))]
 use tao::dpi::LogicalSize;
 use tao::{
@@ -20,16 +20,71 @@ use wry::{
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
 const BUNDLED_VOID_JSON: &str = include_str!("../void.json");
+const VOID_GLYPHS: [[&str; 5]; 4] = [
+    ["##   ##", "##   ##", " ## ## ", "  ###  ", "   #   "],
+    [" ##### ", "##   ##", "##   ##", "##   ##", " ##### "],
+    [" ##### ", "   #   ", "   #   ", "   #   ", " ##### "],
+    ["#####  ", "##   ##", "##   ##", "##   ##", "#####  "],
+];
 
 #[derive(Parser, Debug)]
-#[command(name = "void", version, about = "Void Engine - Lightweight cross-platform web wrapper")]
-#[allow(dead_code)]
+#[command(
+    name = "void",
+    version,
+    override_usage = "void [URL] [OPTIONS]\n       void init",
+    after_help = "Examples:\n  void https://example.com --name MyApp\n  void https://example.com --width 1280 --height 800 --fullscreen\n  void init"
+)]
 struct Args {
-    #[arg(long)]
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    #[arg(value_name = "URL", help = "Open a website in a VOID window")]
     url: Option<String>,
+
+    #[arg(
+        long = "url",
+        value_name = "URL",
+        conflicts_with = "url",
+        help = "Open a website in a VOID window"
+    )]
+    url_flag: Option<String>,
+
+    #[arg(
+        long,
+        alias = "title",
+        value_name = "NAME",
+        help = "Set the window title"
+    )]
+    name: Option<String>,
+
+    #[arg(long, value_name = "PIXELS", help = "Set the window width")]
+    width: Option<f64>,
+
+    #[arg(long, value_name = "PIXELS", help = "Set the window height")]
+    height: Option<f64>,
+
+    #[arg(long, help = "Start in fullscreen mode")]
+    fullscreen: bool,
+
+    #[arg(long, help = "Hide the title bar where supported")]
+    hide_title_bar: bool,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["url", "url_flag"],
+        help = "Load a local file or assets directory"
+    )]
+    assets: Option<String>,
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Create or update void.json with a guided setup
+    Init,
+}
+
+#[derive(Deserialize, Serialize, Default, Debug)]
 struct VoidConfig {
     url: Option<String>,
     #[serde(alias = "dist", alias = "local", alias = "entry")]
@@ -132,7 +187,7 @@ fn resolve_local_asset(asset_spec: &str) -> (PathBuf, String) {
 
 #[cfg(target_os = "android")]
 fn _start_app() {
-    if let Err(err) = start_app(None) {
+    if let Err(err) = start_app(load_config()) {
         eprintln!("Void Engine Android runtime error: {err}");
     }
 }
@@ -150,9 +205,7 @@ pub extern "C" fn init_void_android() {
     wry::android_binding!(com_void, void_engine);
 }
 
-fn start_app(cli_url: Option<String>) -> wry::Result<()> {
-    let config = load_config();
-
+fn start_app(config: VoidConfig) -> wry::Result<()> {
     let title = non_empty(config.title).unwrap_or_else(|| "VOID".to_string());
 
     let event_loop = EventLoop::new();
@@ -179,15 +232,14 @@ fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         .build(&event_loop)
         .expect("Failed to create window");
 
-    let resolved_url = non_empty(cli_url).or_else(|| non_empty(config.url));
+    let resolved_url = non_empty(config.url);
 
     let _webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
-        WebViewBuilder::new()
-            .with_url(&target_url)
-            .build(&window)?
+        WebViewBuilder::new().with_url(&target_url).build(&window)?
     } else {
-        let asset_target = non_empty(config.assets).unwrap_or_else(|| "dist/index.html".to_string());
+        let asset_target =
+            non_empty(config.assets).unwrap_or_else(|| "dist/index.html".to_string());
         let (base_dir, entry_file) = resolve_local_asset(&asset_target);
         let entry_url = format!("void://localhost/{entry_file}");
 
@@ -238,6 +290,153 @@ fn start_app(cli_url: Option<String>) -> wry::Result<()> {
     });
 }
 
+fn prompt(label: &str, default: &str) -> io::Result<String> {
+    if default.is_empty() {
+        print!("{label}: ");
+    } else {
+        print!("{label} [{default}]: ");
+    }
+    io::stdout().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim();
+    Ok(if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer.to_string()
+    })
+}
+
+fn prompt_bool(label: &str, default: bool) -> io::Result<bool> {
+    let hint = if default { "Y/n" } else { "y/N" };
+    loop {
+        print!("{label} ({hint}): ");
+        io::stdout().flush()?;
+
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            "" => return Ok(default),
+            _ => println!("Enter y or n, or press Enter to keep the default."),
+        }
+    }
+}
+
+fn prompt_dimension(label: &str, default: f64) -> io::Result<f64> {
+    loop {
+        let answer = prompt(label, &default.to_string())?;
+        match answer.parse::<f64>() {
+            Ok(value) if value.is_finite() && value > 0.0 => return Ok(value),
+            _ => println!("Enter a number greater than zero."),
+        }
+    }
+}
+
+fn initialize_config() -> io::Result<()> {
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "`void init` needs an interactive terminal; run it in Terminal and answer the prompts.",
+        ));
+    }
+
+    let mut config = fs::read_to_string("void.json")
+        .ok()
+        .and_then(|contents| serde_json::from_str::<VoidConfig>(&contents).ok())
+        .unwrap_or_default();
+
+    println!("{}\n", terminal_banner());
+    println!("Setup — press Enter to keep each default.\n");
+    config.title = Some(prompt(
+        "App name",
+        config.title.as_deref().unwrap_or("VOID"),
+    )?);
+    let url = prompt(
+        "Website URL (type 'local' to use local files)",
+        config.url.as_deref().unwrap_or(""),
+    )?;
+    config.url = if url.trim().is_empty() || url.eq_ignore_ascii_case("local") {
+        None
+    } else {
+        Some(url)
+    };
+
+    if config.url.is_some() {
+        config.assets = None;
+    } else {
+        config.assets = Some(prompt(
+            "Local HTML file or assets directory",
+            config.assets.as_deref().unwrap_or("dist/index.html"),
+        )?);
+    }
+
+    config.width = Some(prompt_dimension(
+        "Window width",
+        config.width.unwrap_or(1200.0),
+    )?);
+    config.height = Some(prompt_dimension(
+        "Window height",
+        config.height.unwrap_or(780.0),
+    )?);
+    config.fullscreen = prompt_bool("Start fullscreen", config.fullscreen)?;
+    config.hide_title_bar = prompt_bool("Hide title bar (macOS)", config.hide_title_bar)?;
+
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    fs::write("void.json", format!("{json}\n"))?;
+    println!("\nSaved settings to void.json.");
+    Ok(())
+}
+
+fn terminal_banner() -> String {
+    let repo = "https://github.com/nixhm55/VOID-ENGINE";
+    let tagline = "Turn websites into desktop apps with Rust.";
+    let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
+    let prompt = if color {
+        "\x1b[38;5;208m~ ⚔️ void\x1b[0m\n"
+    } else {
+        "~ ⚔️ void\n"
+    };
+    let mut banner = prompt.to_string();
+
+    for row in 0..5 {
+        let logo_line = VOID_GLYPHS
+            .iter()
+            .map(|glyph| glyph[row])
+            .collect::<Vec<_>>()
+            .join("   ");
+        let logo = if color {
+            format!("\x1b[38;5;208m{logo_line}\x1b[0m")
+        } else {
+            logo_line
+        };
+        banner.push_str(&logo);
+
+        if row == 1 {
+            banner.push_str("   ");
+            if color {
+                banner.push_str(&format!("\x1b[38;5;208m{repo}\x1b[0m"));
+            } else {
+                banner.push_str(repo);
+            }
+        } else if row == 2 {
+            banner.push_str("   ");
+            if color {
+                banner.push_str(&format!("\x1b[92m{tagline}\x1b[0m"));
+            } else {
+                banner.push_str(tagline);
+            }
+        }
+        banner.push('\n');
+    }
+
+    banner.pop();
+    banner
+}
+
 #[allow(dead_code)]
 fn main() -> wry::Result<()> {
     #[cfg(target_os = "android")]
@@ -248,7 +447,40 @@ fn main() -> wry::Result<()> {
 
     #[cfg(not(target_os = "android"))]
     {
-        let args = Args::parse();
-        start_app(args.url)
+        let matches = Args::command().before_help(terminal_banner()).get_matches();
+        let args = Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+        if matches!(args.command, Some(Commands::Init)) {
+            if let Err(err) = initialize_config() {
+                eprintln!("Could not configure VOID: {err}");
+                std::process::exit(2);
+            }
+            return Ok(());
+        }
+
+        let mut config = load_config();
+        if let Some(url) = args.url.or(args.url_flag) {
+            config.url = Some(url);
+        }
+        if let Some(name) = args.name {
+            config.title = Some(name);
+        }
+        if let Some(width) = args.width {
+            config.width = Some(width);
+        }
+        if let Some(height) = args.height {
+            config.height = Some(height);
+        }
+        if args.fullscreen {
+            config.fullscreen = true;
+        }
+        if args.hide_title_bar {
+            config.hide_title_bar = true;
+        }
+        if let Some(assets) = args.assets {
+            config.assets = Some(assets);
+            config.url = None;
+        }
+
+        start_app(config)
     }
 }

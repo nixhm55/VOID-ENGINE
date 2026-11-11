@@ -104,7 +104,17 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-engine-${GITHUB_SHA}.tar.gz"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 10 --max-time 45 \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz" \
+            --output "${archive}"
+          tar -xzf "${archive}" --strip-components=1 -C "${GITHUB_WORKSPACE}"
 
       - name: Install Rust Stable Toolchain
         id: rust
