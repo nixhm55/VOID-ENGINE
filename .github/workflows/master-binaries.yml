@@ -121,7 +121,13 @@ jobs:
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/d8" \
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
+            # sdkmanager exits after accepting licenses, which can close the
+            # pipe while `yes` is still writing. Ignore that expected SIGPIPE
+            # but preserve sdkmanager's exit status so installation failures
+            # still fail this step.
+            set +o pipefail
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;34.0.0"
+            set -o pipefail
           fi
           mkdir -p ~/.android
           if [[ ! -f ~/.android/debug.keystore ]]; then
