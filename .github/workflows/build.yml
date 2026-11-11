@@ -519,8 +519,12 @@ jobs:
         run: |
           export NDK_HOME=$ANDROID_NDK_LATEST_HOME
 
-          if [ ! -d "$ANDROID_HOME/platforms/android-33" ] || [ ! -x "$ANDROID_HOME/build-tools/33.0.2/aapt" ]; then
-            (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;33.0.2"
+          if [ ! -d "$ANDROID_HOME/platforms/android-33" ] \
+            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/aapt" ] \
+            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/d8" ] \
+            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" ] \
+            || [ ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]; then
+            (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;34.0.0"
           fi
 
           mkdir -p ~/.android
@@ -529,6 +533,8 @@ jobs:
           fi
 
           cargo apk build --lib --release
+
+          bash scripts/package-android-apk.sh target/release/apk/void.apk
 
           rm -f target/release/apk/*unaligned*.apk
           mkdir -p output

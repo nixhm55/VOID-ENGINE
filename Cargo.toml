@@ -68,10 +68,19 @@ name = "android.permission.RECORD_AUDIO"
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MODIFY_AUDIO_SETTINGS"
 
+[[package.metadata.android.uses_permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+max_sdk_version = 28
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.POST_NOTIFICATIONS"
+
 [package.metadata.android.application]
 label = "Void Engine"
 uses_cleartext_traffic = true
+has_code = true
 
 [package.metadata.android.application.activity]
+name = "com.mdnm.voidengine.VoidActivity"
 exported = true
 config_changes = "orientation|keyboardHidden|screenSize"

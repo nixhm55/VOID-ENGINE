@@ -186,14 +186,23 @@ unsafe fn setup_native_activity_webview(
         }
     }
 
-    if let Ok(client) = env.new_object("android/webkit/WebViewClient", "()V", &[]) {
-        let _ = env.call_method(
-            &webview,
-            "setWebViewClient",
-            "(Landroid/webkit/WebViewClient;)V",
-            &[JValue::Object(&client)],
-        );
-    }
+    let config = load_config();
+    let target = config
+        .url
+        .or(config.assets)
+        .unwrap_or_else(|| "dist/index.html".to_string());
+    let target_obj = env.new_string(&target)?;
+    let target_obj = JObject::from(target_obj);
+
+    // The custom Activity installs WebChromeClient runtime permission handling
+    // a DownloadManager-backed DownloadListener, and a native notification
+    // bridge on this WebView.
+    env.call_method(
+        activity_obj,
+        "configureVoidWebView",
+        "(Landroid/webkit/WebView;Ljava/lang/String;)V",
+        &[JValue::Object(&webview), JValue::Object(&target_obj)],
+    )?;
 
     env.call_method(
         activity_obj,
@@ -201,12 +210,6 @@ unsafe fn setup_native_activity_webview(
         "(Landroid/view/View;)V",
         &[JValue::Object(&webview)],
     )?;
-
-    let config = load_config();
-    let target = config
-        .url
-        .or(config.assets)
-        .unwrap_or_else(|| "dist/index.html".to_string());
 
     if is_remote_url(&target) {
         let j_url = env.new_string(&target)?;

@@ -18,6 +18,8 @@ use wry::{
     PermissionResponse, WebViewBuilder,
 };
 
+#[cfg(target_os = "macos")]
+mod native_notifications;
 mod user_agent;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
@@ -151,6 +153,28 @@ fn normalize_url(raw_url: &str) -> String {
     }
 }
 
+fn notification_host(url: &str) -> Option<String> {
+    let uri = url.parse::<wry::http::Uri>().ok()?;
+    (uri.scheme_str() == Some("https"))
+        .then(|| uri.host().map(str::to_ascii_lowercase))
+        .flatten()
+}
+
+fn with_native_notification_bridge(
+    builder: WebViewBuilder,
+    allowed_host: Option<String>,
+) -> WebViewBuilder {
+    #[cfg(target_os = "macos")]
+    {
+        native_notifications::install(builder, allowed_host)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = allowed_host;
+        builder
+    }
+}
+
 fn mime_type_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("html") | Some("htm") => "text/html; charset=utf-8",
@@ -238,22 +262,30 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
     let _webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
-        WebViewBuilder::new()
-            .with_user_agent(user_agent::current())
-            // Keep camera/microphone requests on the platform's normal
-            // permission path instead of implicitly granting them.
-            .with_permission_handler(|_| PermissionResponse::Default)
-            .with_url(&target_url)
-            .build(&window)?
+        with_native_notification_bridge(
+            WebViewBuilder::new()
+                .with_user_agent(user_agent::current())
+                // Keep camera/microphone requests on the platform's normal
+                // permission path instead of implicitly granting them.
+                .with_permission_handler(|_| PermissionResponse::Default),
+            notification_host(&target_url),
+        )
+        .with_url(&target_url)
+        .build(&window)?
     } else {
         let asset_target =
             non_empty(config.assets).unwrap_or_else(|| "dist/index.html".to_string());
         let (base_dir, entry_file) = resolve_local_asset(&asset_target);
         let entry_url = format!("void://localhost/{entry_file}");
 
-        WebViewBuilder::new()
-            .with_user_agent(user_agent::current())
-            .with_permission_handler(|_| PermissionResponse::Default)
+        let builder = with_native_notification_bridge(
+            WebViewBuilder::new()
+                .with_user_agent(user_agent::current())
+                .with_permission_handler(|_| PermissionResponse::Default),
+            notification_host(&entry_url),
+        );
+
+        builder
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');
                 let rel_path = if raw_path.is_empty() {
