@@ -10,8 +10,7 @@ use reqwest::{header, Client, Url};
 use serde_json::{json, Value};
 
 const DEFAULT_REPOSITORY: &str = "nixhm55/VOID-ENGINE";
-const DEFAULT_WORKFLOW: &str = "build.yml";
-const DEFAULT_REF: &str = "main";
+const BUILD_PROXY_ENDPOINT: &str = "https://engineproxy.vercel.app/api";
 const API_VERSION: &str = "2026-03-10";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -37,10 +36,8 @@ fn usage() -> &'static str {
        -h, --help          Show this help\n\
        -V, --version       Show the client version\n\n\
      Environment:\n\
-       VOID_GITHUB_TOKEN        GitHub token with Actions: write permission\n\
-       VOID_GITHUB_REPOSITORY   Build repository (default: nixhm55/VOID-ENGINE)\n\
-       VOID_GITHUB_WORKFLOW     Workflow file (default: build.yml)\n\
-       VOID_GITHUB_REF          Branch or tag (default: main)\n\
+       VOID_GITHUB_TOKEN        GitHub token with Actions: read permission for polling/downloads\n\
+       VOID_GITHUB_REPOSITORY   Build repository for polling (default: nixhm55/VOID-ENGINE)\n\
      Downloaded ZIPs and extracted packages are saved in the current folder."
 }
 
@@ -142,17 +139,6 @@ fn validate_repository(repository: &str) -> Result<(&str, &str), String> {
         return Err("VOID_GITHUB_REPOSITORY must have the form owner/repository".to_string());
     }
     Ok((owner, name))
-}
-
-fn validate_workflow(workflow: &str) -> Result<&str, String> {
-    if workflow.is_empty()
-        || !workflow
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
-        return Err("VOID_GITHUB_WORKFLOW must be a workflow filename or numeric ID".to_string());
-    }
-    Ok(workflow)
 }
 
 fn title_from_url(target_url: &str) -> String {
@@ -476,7 +462,7 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
         .or_else(|_| env::var("GH_TOKEN"))
         .or_else(|_| env::var("GITHUB_TOKEN"))
         .map_err(|_| {
-            "set VOID_GITHUB_TOKEN to a GitHub token with Actions: write permission".to_string()
+            "set VOID_GITHUB_TOKEN to a GitHub token with Actions: read permission for build polling and artifact downloads".to_string()
         })?;
     if token.trim().is_empty() {
         return Err("VOID_GITHUB_TOKEN is empty".to_string());
@@ -485,48 +471,38 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
     let repository = env_value("VOID_GITHUB_REPOSITORY", DEFAULT_REPOSITORY);
     let (owner, repo) = validate_repository(&repository)?;
     let repository = format!("{owner}/{repo}");
-    let workflow = env_value("VOID_GITHUB_WORKFLOW", DEFAULT_WORKFLOW);
-    validate_workflow(&workflow)?;
-    let git_ref = env_value("VOID_GITHUB_REF", DEFAULT_REF);
     let app_name = arguments
         .app_name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| title_from_url(&arguments.target_url));
     let icon_url = arguments.icon_url.unwrap_or_default();
-    let endpoint = format!(
-        "https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches"
-    );
-
     let client = Client::builder()
         .user_agent(concat!("void-cli/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|error| format!("could not create the GitHub API client: {error}"))?;
+        .map_err(|error| format!("could not create the cloud build client: {error}"))?;
 
+    let mut payload = json!({
+        "target_url": arguments.target_url,
+        "app_name": app_name,
+    });
+    if !icon_url.is_empty() {
+        payload["icon_url"] = json!(icon_url);
+    }
     let response = client
-        .post(endpoint)
-        .bearer_auth(token.trim())
-        .header(header::ACCEPT, "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", API_VERSION)
-        .json(&json!({
-            "ref": git_ref,
-            "inputs": {
-                "target_url": arguments.target_url,
-                "app_name": app_name,
-                "icon_url": icon_url,
-            },
-            "return_run_details": true,
-        }))
+        .post(BUILD_PROXY_ENDPOINT)
+        .header(header::ACCEPT, "application/json")
+        .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("GitHub workflow dispatch failed: {error}"))?;
+        .map_err(|error| format!("Vercel build proxy request failed: {error}"))?;
 
     let status = response.status();
     let response_text = response
         .text()
         .await
-        .map_err(|error| format!("could not read GitHub's response: {error}"))?;
+        .map_err(|error| format!("could not read the build proxy response: {error}"))?;
     if !status.is_success() {
         let detail = response_text.trim();
         let detail = if detail.is_empty() {
@@ -534,22 +510,26 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
         } else {
             format!(": {detail}")
         };
-        return Err(format!("GitHub returned HTTP {status}{detail}"));
+        return Err(format!("build proxy returned HTTP {status}{detail}"));
     }
 
     let details: Value = serde_json::from_str(&response_text)
-        .map_err(|error| format!("GitHub did not return workflow run details: {error}"))?;
+        .map_err(|error| format!("build proxy returned invalid JSON: {error}"))?;
+    let workflow_run = details.get("workflow_run");
     let run_id = details
         .get("workflow_run_id")
+        .or_else(|| details.get("run_id"))
+        .or_else(|| workflow_run.and_then(|run| run.get("id")))
         .and_then(Value::as_u64)
         .ok_or_else(|| {
-            "GitHub did not return a workflow run ID; confirm the build workflow supports run details"
+            "build proxy did not return a workflow run ID; confirm it returns the dispatched run details"
                 .to_string()
         })?;
     let run_url = details
         .get("html_url")
         .and_then(Value::as_str)
         .or_else(|| details.get("run_url").and_then(Value::as_str))
+        .or_else(|| workflow_run.and_then(|run| run.get("html_url")).and_then(Value::as_str))
         .unwrap_or("https://github.com/actions");
     println!("Started cloud build for {app_name}: {run_url}");
     wait_for_run(&client, token.trim(), &repository, run_id, run_url).await?;
