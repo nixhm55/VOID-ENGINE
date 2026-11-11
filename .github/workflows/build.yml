@@ -113,10 +113,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v5-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-v5-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-
-            rust-v5-macos-
+            rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-
+            rust-v6-macos-
 
       - name: Install cargo-bundle
         if: steps.rust-cache.outputs.cache-hit != 'true'
@@ -248,10 +248,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v5-windows-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-windows-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-v5-windows-${{ steps.rust.outputs.cachekey }}-
-            rust-v5-windows-
+            rust-v6-windows-${{ steps.rust.outputs.cachekey }}-
+            rust-v6-windows-
 
       - name: Install cargo-wix
         if: ${{ (inputs.windows_format == 'msi' || inputs.windows_format == 'both') && steps.rust-cache.outputs.cache-hit != 'true' }}
@@ -377,24 +377,29 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v5-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-v5-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-
-            rust-v5-linux-
+            rust-v6-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-
+            rust-v6-linux-
 
-      - name: Cache and restore Linux apt packages
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: build-essential pkg-config libwebkit2gtk-4.1-dev libfuse2 imagemagick
-          version: ubuntu-24.04-v1
-
-      - name: Cache Linux apt archives fallback
+      - name: Cache Linux apt snapshot and archives
+        id: apt-cache
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
-          key: ubuntu-24.04-apt-archives-${{ matrix.format }}-v2
+          path: |
+            .cache/linux-apt-rootfs.tar.zst
+            /var/cache/apt/archives
+          key: ubuntu-24.04-apt-snapshot-v3
           restore-keys: |
-            ubuntu-24.04-apt-archives-
+            ubuntu-24.04-apt-snapshot-
+
+      - name: Restore pre-extracted Linux apt snapshot
+        if: steps.apt-cache.outputs.cache-hit == 'true'
+        run: |
+          if [ -f .cache/linux-apt-rootfs.tar.zst ]; then
+            sudo tar -I "zstd -T0" -xf .cache/linux-apt-rootfs.tar.zst -C /
+            sudo ldconfig
+          fi
 
       - name: Install Linux build dependencies
         env:
@@ -408,12 +413,25 @@ jobs:
             exit 0
           fi
           sudo rm -f /etc/apt/apt.conf.d/docker-clean /var/lib/dpkg/info/man-db.postinst
+          ls /var/lib/dpkg/info/*.list > /tmp/dpkg-before.txt
           if compgen -G "/var/cache/apt/archives/*.deb" > /dev/null; then
             sudo dpkg --force-all -i /var/cache/apt/archives/*.deb || sudo apt-get -o APT::Keep-Downloaded-Packages=true install -y -f --no-install-recommends
           else
             sudo apt-get -o APT::Keep-Downloaded-Packages=true update -qq
             sudo apt-get -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev libfuse2 imagemagick
           fi
+          ls /var/lib/dpkg/info/*.list > /tmp/dpkg-after.txt
+          comm -13 <(sort /tmp/dpkg-before.txt) <(sort /tmp/dpkg-after.txt) | xargs cat | sort -u | while IFS= read -r p; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              [ ! -d "$p" ] && echo "$p"
+            fi
+          done > /tmp/new-files.txt
+          echo "/var/lib/dpkg/status" >> /tmp/new-files.txt
+          echo "/var/lib/dpkg/info" >> /tmp/new-files.txt
+          echo "/etc/alternatives" >> /tmp/new-files.txt
+          mkdir -p .cache
+          sudo tar -I "zstd -1 -T0" -cf .cache/linux-apt-rootfs.tar.zst --files-from=/tmp/new-files.txt 2>/dev/null || true
+          sudo chown -R "$USER:$USER" .cache
 
       - name: Configure app metadata
         id: configure
@@ -534,10 +552,10 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v5-android-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-android-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-v5-android-${{ steps.rust.outputs.cachekey }}-
-            rust-v5-android-
+            rust-v6-android-${{ steps.rust.outputs.cachekey }}-
+            rust-v6-android-
 
       - name: Cache Android SDK platform, build tools, and debug keystore
         uses: actions/cache@v4
