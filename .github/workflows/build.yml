@@ -378,11 +378,24 @@ jobs:
         with:
           path: .cache/apktool-3.0.3.jar
           key: apktool-3.0.3-dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423
+      - name: Cache Android master APK
+        uses: actions/cache@v4
+        with:
+          path: target/master/void-android-template.apk
+          # Tie this cache to the inputs that produce the generic APK. App
+          # metadata and branding are injected after download, so they must
+          # not invalidate the reusable master binary.
+          key: android-master-apk-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'src/android/java/**', 'dist/index.html', 'scripts/prepare-branding.mjs', 'scripts/package-android-apk.sh', '.github/workflows/master-binaries.yml') }}
       - name: Download Android master APK
         env:
           MASTER_BINARY_ASSET: void-android-template.apk
           MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
-        run: node scripts/download-master-binary.mjs
+        run: |
+          if [[ -s target/master/void-android-template.apk ]]; then
+            echo "Using cached Android master APK"
+          else
+            node scripts/download-master-binary.mjs
+          fi
       - name: Repackage app-specific Android APK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
