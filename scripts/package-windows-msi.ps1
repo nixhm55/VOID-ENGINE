@@ -8,6 +8,8 @@ if ($wixVersion -notmatch '^\d{1,5}\.\d{1,5}\.\d{1,5}$') { throw "Invalid MSI ve
 $md5 = [System.Security.Cryptography.MD5]::Create()
 try {
   $upgradeCode = [Guid]::new($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($appSlug))).ToString().ToUpperInvariant()
+  $exeComponentGuid = [Guid]::new($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes("${appSlug}:exe"))).ToString().ToUpperInvariant()
+  $configComponentGuid = [Guid]::new($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes("${appSlug}:config"))).ToString().ToUpperInvariant()
 } finally {
   $md5.Dispose()
 }
@@ -35,7 +37,7 @@ $wxs = @'
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="@@APP_NAME@@" Language="1033" Version="@@APP_VERSION@@" Manufacturer="VOID Engine" UpgradeCode="@@UPGRADE_CODE@@">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="ProductIcon" SourceFile="$(var.IconPath)" />
@@ -54,11 +56,14 @@ $wxs = @'
       <ComponentRef Id="StartMenuCleanup" />
     </Feature>
     <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="ApplicationExeComponent" Guid="*" Win64="yes">
-        <File Id="ApplicationExeFile" Source="$(var.BinaryPath)" Name="$(var.AppSlug).exe" KeyPath="yes" />
+      <Component Id="ApplicationExeComponent" Guid="@@EXE_GUID@@" Win64="yes">
+        <File Id="ApplicationExeFile" Source="$(var.BinaryPath)" Name="$(var.AppSlug).exe" />
+        <RegistryValue Root="HKCU" Key="Software\VOID Engine\$(var.AppSlug)" Name="Executable" Type="integer" Value="1" KeyPath="yes" />
       </Component>
-      <Component Id="ApplicationConfigComponent" Guid="*" Win64="yes">
-        <File Id="ApplicationConfigFile" Source="$(var.ConfigPath)" Name="$(var.AppSlug).json" KeyPath="yes" />
+      <Component Id="ApplicationConfigComponent" Guid="@@CONFIG_GUID@@" Win64="yes">
+        <File Id="ApplicationConfigFile" Source="$(var.ConfigPath)" Name="$(var.AppSlug).json" />
+        <RegistryValue Root="HKCU" Key="Software\VOID Engine\$(var.AppSlug)" Name="Config" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
       </Component>
     </DirectoryRef>
     <DirectoryRef Id="StartMenuDir">
@@ -71,7 +76,7 @@ $wxs = @'
   </Product>
 </Wix>
 '@
-$wxs = $wxs.Replace('@@APP_NAME@@', $escapedName).Replace('@@APP_VERSION@@', $wixVersion).Replace('@@UPGRADE_CODE@@', $upgradeCode)
+$wxs = $wxs.Replace('@@APP_NAME@@', $escapedName).Replace('@@APP_VERSION@@', $wixVersion).Replace('@@UPGRADE_CODE@@', $upgradeCode).Replace('@@EXE_GUID@@', $exeComponentGuid).Replace('@@CONFIG_GUID@@', $configComponentGuid)
 $wxsPath = Join-Path $PWD 'wix/main.wxs'
 New-Item -ItemType Directory -Force (Split-Path $wxsPath) | Out-Null
 Set-Content -LiteralPath $wxsPath -Value $wxs -Encoding utf8

@@ -60,6 +60,9 @@ application = root.find("application")
 if application is None:
     raise SystemExit("Android manifest has no application element")
 application.set("{%s}label" % android, app_name)
+# Keep the framework theme reference fully qualified. If it is emitted as an
+# app-local @style reference, AAPT2 looks for a nonexistent app resource.
+application.set("{%s}theme" % android, "@android:style/Theme.Material.NoActionBar")
 tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 PY
 

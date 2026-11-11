@@ -133,9 +133,13 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    name: Windows packages
+    name: Windows ${{ matrix.format }}
     if: ${{ inputs.build_windows }}
     runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        format: ${{ fromJSON(inputs.windows_format == 'both' && '["exe","msi"]' || format('["{0}"]', inputs.windows_format)) }}
     steps:
       - uses: actions/checkout@v7
       - name: Configure app metadata
@@ -165,7 +169,7 @@ jobs:
         shell: pwsh
         run: ./scripts/set-windows-icon.ps1 -Executable target/master/void.exe -IconFile branding/app.ico
       - name: Package Windows executable and config
-        if: ${{ inputs.windows_format == 'exe' || inputs.windows_format == 'both' }}
+        if: ${{ matrix.format == 'exe' }}
         env:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
         shell: pwsh
@@ -174,7 +178,7 @@ jobs:
           Copy-Item -Force target/master/void.exe "output/$($env:APP_SLUG).exe"
           Copy-Item -Force void.json "output/$($env:APP_SLUG).json"
       - name: Ensure WiX Toolset is available
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
+        if: ${{ matrix.format == 'msi' }}
         shell: pwsh
         run: |
           if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
@@ -183,7 +187,7 @@ jobs:
             else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
           }
       - name: Package Windows MSI
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
+        if: ${{ matrix.format == 'msi' }}
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
@@ -192,7 +196,7 @@ jobs:
         shell: pwsh
         run: ./scripts/package-windows-msi.ps1
       - uses: actions/upload-artifact@v7
-        if: ${{ inputs.windows_format == 'exe' || inputs.windows_format == 'both' }}
+        if: ${{ matrix.format == 'exe' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-exe
           path: |
@@ -200,7 +204,7 @@ jobs:
             output/${{ steps.configure.outputs.app_slug }}.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
-        if: ${{ inputs.windows_format == 'msi' || inputs.windows_format == 'both' }}
+        if: ${{ matrix.format == 'msi' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-msi
           path: output/${{ steps.configure.outputs.app_slug }}.msi
