@@ -221,6 +221,14 @@ jobs:
             echo -n "APPL????" > "${APP_DIR}/PkgInfo"
           fi
 
+          # cargo-bundle and the fallback bundle path both need these usage
+          # descriptions for WKWebView camera and microphone permission prompts.
+          INFO_PLIST="dmg_staging/${APP_NAME}.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string VOID needs camera access for websites you choose to use." "${INFO_PLIST}" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription VOID needs camera access for websites you choose to use." "${INFO_PLIST}"
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string VOID needs microphone access for websites you choose to use." "${INFO_PLIST}" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription VOID needs microphone access for websites you choose to use." "${INFO_PLIST}"
+
           codesign --force --deep --sign - "dmg_staging/${APP_NAME}.app"
           ln -s /Applications dmg_staging/Applications
 

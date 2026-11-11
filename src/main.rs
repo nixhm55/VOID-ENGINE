@@ -15,7 +15,7 @@ use tao::{
 };
 use wry::{
     http::{header::CONTENT_TYPE, Response, StatusCode},
-    WebViewBuilder,
+    PermissionResponse, WebViewBuilder,
 };
 
 mod user_agent;
@@ -240,6 +240,9 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let target_url = normalize_url(&url);
         WebViewBuilder::new()
             .with_user_agent(user_agent::current())
+            // Keep camera/microphone requests on the platform's normal
+            // permission path instead of implicitly granting them.
+            .with_permission_handler(|_| PermissionResponse::Default)
             .with_url(&target_url)
             .build(&window)?
     } else {
@@ -250,6 +253,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
         WebViewBuilder::new()
             .with_user_agent(user_agent::current())
+            .with_permission_handler(|_| PermissionResponse::Default)
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');
                 let rel_path = if raw_path.is_empty() {

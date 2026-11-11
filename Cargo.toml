@@ -59,6 +59,15 @@ target_sdk_version = 33
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
 
+[[package.metadata.android.uses_permission]]
+name = "android.permission.CAMERA"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MODIFY_AUDIO_SETTINGS"
+
 [package.metadata.android.application]
 label = "Void Engine"
 uses_cleartext_traffic = true
