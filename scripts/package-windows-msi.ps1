@@ -49,13 +49,16 @@ $wxs = @'
       </Directory>
     </Directory>
     <Feature Id="MainFeature" Title="@@APP_NAME@@" Level="1">
-      <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="ApplicationExeComponent" />
+      <ComponentRef Id="ApplicationConfigComponent" />
       <ComponentRef Id="StartMenuCleanup" />
     </Feature>
     <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="ApplicationFiles" Guid="*" Win64="yes">
-        <File Id="ApplicationExe" Source="$(var.BinaryPath)" Name="$(var.AppSlug).exe" KeyPath="yes" />
-        <File Id="ApplicationConfig" Source="$(var.ConfigPath)" Name="$(var.AppSlug).json" />
+      <Component Id="ApplicationExeComponent" Guid="*" Win64="yes">
+        <File Id="ApplicationExeFile" Source="$(var.BinaryPath)" Name="$(var.AppSlug).exe" KeyPath="yes" />
+      </Component>
+      <Component Id="ApplicationConfigComponent" Guid="*" Win64="yes">
+        <File Id="ApplicationConfigFile" Source="$(var.ConfigPath)" Name="$(var.AppSlug).json" KeyPath="yes" />
       </Component>
     </DirectoryRef>
     <DirectoryRef Id="StartMenuDir">

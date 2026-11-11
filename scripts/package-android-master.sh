@@ -22,6 +22,8 @@ fi
 tools_dir="${sdk_root}/build-tools/${build_tools}"
 for tool in java curl sha256sum python3; do command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 1; }; done
 for tool in zipalign apksigner; do [[ -x "${tools_dir}/${tool}" ]] || { echo "Missing Android tool: ${tools_dir}/${tool}" >&2; exit 1; }; done
+android_jar="${sdk_root}/platforms/android-33/android.jar"
+[[ -f "$android_jar" ]] || { echo "Missing Android framework resources: $android_jar" >&2; exit 1; }
 [[ -f "$template_apk" && -f void.json && -f branding/icon.png ]] || { echo "Template APK, void.json, or branding/icon.png is missing" >&2; exit 1; }
 
 mkdir -p "$(dirname "$apktool_jar")" "$(dirname "$output_apk")" .cache
@@ -36,7 +38,12 @@ fi
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 decoded="${temp_dir}/decoded"
-java -jar "$apktool_jar" d --force "$template_apk" --output "$decoded"
+framework_dir="${temp_dir}/framework"
+mkdir -p "$framework_dir"
+# Use this SDK's platform resources explicitly so Apktool's AAPT2 link always
+# receives framework package 1, independent of runner-global Apktool state.
+java -jar "$apktool_jar" if "$android_jar" --frame-path "$framework_dir"
+java -jar "$apktool_jar" d --force --frame-path "$framework_dir" "$template_apk" --output "$decoded"
 
 python3 - "$decoded/AndroidManifest.xml" "$app_package" "$app_name" "$app_version" <<'PY'
 import sys
@@ -56,6 +63,36 @@ application.set("{%s}label" % android, app_name)
 tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 PY
 
+# Ensure the rebuild links AndroidManifest.xml against framework package 1.
+# Edit only this small Apktool metadata block using Python's standard library.
+python3 - "$decoded/apktool.yml" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+start = next((i for i, line in enumerate(lines) if line == "usesFramework:"), None)
+if start is None:
+    lines.extend(["", "usesFramework:", "  ids:", "  - 1", "  tag: null"])
+else:
+    end = start + 1
+    while end < len(lines) and (not lines[end] or lines[end][0].isspace()):
+        end += 1
+    block = lines[start + 1:end]
+    ids = []
+    for line in block:
+        match = re.match(r"^\s*-\s*(\d+)\s*$", line)
+        if match and match.group(1) not in ids:
+            ids.append(match.group(1))
+    if "1" not in ids:
+        ids.insert(0, "1")
+    tag = next((line.split(":", 1)[1].strip() for line in block
+                if re.match(r"^\s*tag\s*:", line)), "null")
+    lines[start:end] = ["usesFramework:", "  ids:"] + [f"  - {value}" for value in ids] + [f"  tag: {tag}"]
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
 mkdir -p "$decoded/assets"
 cp void.json "$decoded/assets/void.json"
 for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
@@ -67,7 +104,7 @@ done
 rm -rf "$decoded/res/mipmap-anydpi-v26"
 
 rebuilt="${temp_dir}/rebuilt.apk"
-java -jar "$apktool_jar" b "$decoded" --output "$rebuilt"
+java -jar "$apktool_jar" b --frame-path "$framework_dir" "$decoded" --output "$rebuilt"
 if [[ ! -f "$keystore" ]]; then
   mkdir -p "$(dirname "$keystore")"
   keytool -genkeypair -keystore "$keystore" -storepass "$keystore_password" \
