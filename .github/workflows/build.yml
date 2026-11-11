@@ -97,6 +97,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Capture Cargo.lock fingerprint before app metadata changes
+        id: cargo-lock
+        run: echo "sha256=$(shasum -a 256 Cargo.lock | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust stable toolchain
         id: rust
         uses: dtolnay/rust-toolchain@stable
@@ -113,7 +117,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
           restore-keys: |
             rust-v6-macos-${{ inputs.multi_arch }}-${{ steps.rust.outputs.cachekey }}-
             rust-v6-macos-
@@ -231,6 +235,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Capture Cargo.lock fingerprint before app metadata changes
+        id: cargo-lock
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Path Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
       - name: Set up MSVC and Windows SDK tools
         uses: ilammy/msvc-dev-cmd@v1
 
@@ -248,7 +259,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v6-windows-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-windows-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
           restore-keys: |
             rust-v6-windows-${{ steps.rust.outputs.cachekey }}-
             rust-v6-windows-
@@ -363,6 +374,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Capture Cargo.lock fingerprint before app metadata changes
+        id: cargo-lock
+        run: echo "sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust stable toolchain
         id: rust
         uses: dtolnay/rust-toolchain@stable
@@ -377,7 +392,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v6-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v7-linux-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
           restore-keys: |
             rust-v6-linux-${{ matrix.format }}-${{ steps.rust.outputs.cachekey }}-
             rust-v6-linux-
@@ -530,6 +545,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Capture Cargo.lock fingerprint before app metadata changes
+        id: cargo-lock
+        run: echo "sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - name: Setup Java
         uses: actions/setup-java@v6
         with:
@@ -552,7 +571,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: rust-v6-android-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-v6-android-${{ steps.rust.outputs.cachekey }}-${{ steps.cargo-lock.outputs.sha256 }}
           restore-keys: |
             rust-v6-android-${{ steps.rust.outputs.cachekey }}-
             rust-v6-android-
