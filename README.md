@@ -15,7 +15,7 @@ void https://example.com --name "My App"
 void https://example.com --name "My App" --icon-url https://example.com/icon.png
 ```
 
-The client sends the URL, app name, and optional icon URL to the `build.yml` workflow on `main`, then prints the GitHub Actions run link. The workflow builds the platform packages in parallel; this phase returns the run link and does not yet wait for or download the resulting artifacts.
+The client sends the URL, app name, and optional icon URL to the `build.yml` workflow on `main`, waits for that specific run to finish, and downloads its artifact ZIP files into a new `void-build-<name>-<run-id>` folder in your current directory. The workflow builds the platform packages in parallel. Hosted runner queue times depend on GitHub capacity and cannot be guaranteed by the client.
 
 The repository, workflow filename, and Git ref can be changed with `VOID_GITHUB_REPOSITORY`, `VOID_GITHUB_WORKFLOW`, and `VOID_GITHUB_REF`. See `void --help` for details.
 
