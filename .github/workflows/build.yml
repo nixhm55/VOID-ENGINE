@@ -252,6 +252,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows
+          cache-workspace-crates: "true"
 
       - name: Set up MSVC and Windows SDK tools
         uses: ilammy/msvc-dev-cmd@v1
@@ -354,14 +355,59 @@ jobs:
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
 
+      - name: Cache Linux packaging packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/void-apt-archives
+          key: ubuntu-24.04-${{ matrix.format }}-apt-v1
+          restore-keys: |
+            ubuntu-24.04-${{ matrix.format }}-apt-
+
       - name: Install Linux build dependencies
+        env:
+          APT_ARCHIVES: ${{ runner.temp }}/void-apt-archives
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev
+          set -euo pipefail
+          mkdir -p "$APT_ARCHIVES/partial"
+          missing=()
+          for tool in gcc g++ make pkg-config; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              missing+=(build-essential pkg-config)
+              break
+            fi
+          done
+          if ! dpkg-query -W -f='${Status}' libwebkit2gtk-4.1-dev 2>/dev/null | grep -q 'install ok installed'; then
+            missing+=(libwebkit2gtk-4.1-dev)
+          fi
+          if ((${#missing[@]})); then
+            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" update -qq
+            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" install -y --no-install-recommends "${missing[@]}"
+          fi
 
       - name: Install AppImage tools
         if: ${{ matrix.format == 'appimage' }}
-        run: sudo apt-get install -y libfuse2 imagemagick
+        env:
+          APT_ARCHIVES: ${{ runner.temp }}/void-apt-archives
+        run: |
+          set -euo pipefail
+          missing=()
+          if ! dpkg-query -W -f='${Status}' libfuse2 2>/dev/null | grep -q 'install ok installed'; then
+            missing+=(libfuse2)
+          fi
+          if ! command -v convert >/dev/null 2>&1; then
+            missing+=(imagemagick)
+          fi
+          if ((${#missing[@]})); then
+            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" update -qq
+            sudo apt-get -o Dir::Cache::archives="$APT_ARCHIVES" install -y --no-install-recommends "${missing[@]}"
+          fi
+
+      - name: Cache AppImage tool
+        if: ${{ matrix.format == 'appimage' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/appimagetool-x86_64.AppImage
+          key: appimagetool-x86_64-v1
 
       - name: Install Rust stable toolchain
         id: rust
@@ -371,6 +417,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux
+          cache-workspace-crates: "true"
 
       - name: Install cargo-deb
         if: ${{ matrix.format == 'deb' }}
@@ -417,9 +464,12 @@ jobs:
           exec "\$HERE/usr/bin/${APP_SLUG}" "\$@"
           EOF
           chmod +x "AppDir/usr/bin/${APP_SLUG}" AppDir/AppRun
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          chmod +x appimagetool
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir "output/${APP_SLUG}.AppImage"
+          mkdir -p .cache
+          if [ ! -f .cache/appimagetool-x86_64.AppImage ]; then
+            wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O .cache/appimagetool-x86_64.AppImage
+          fi
+          chmod +x .cache/appimagetool-x86_64.AppImage
+          ARCH=x86_64 .cache/appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir "output/${APP_SLUG}.AppImage"
 
       - uses: actions/upload-artifact@v7
         with:
