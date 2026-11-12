@@ -12,7 +12,7 @@ default = ["lite"]
 lite = []
 geolocation = []
 bluetooth = ["dep:btleplug", "dep:tokio", "dep:futures-util", "dep:rfd", "dep:uuid"]
-max = ["geolocation", "bluetooth"]
+max = ["lite", "geolocation", "bluetooth"]
 
 [package.metadata.bundle]
 name = "VOID"
