@@ -75,32 +75,11 @@ Open a new PowerShell window after installation if you want the updated PATH to 
 
 <br />
 
-<h3 align="center">Set the GitHub token</h3>
+<h3 align="center">Sign in to GitHub</h3>
 
-The client needs a GitHub token with **Actions: read** access to the repository whose build run and artifacts it will read. Enter it at a hidden prompt so it is not saved in shell history.
+Run `void login`. The client displays a one-time code and GitHub verification URL, then saves the access token in the operating system's credential store after you approve it. The token is never printed or added to your shell profile. Run `void login` again to replace the saved sign-in.
 
-**Bash (Linux):**
-
-```sh
-read -rsp "GitHub token: " VOID_GITHUB_TOKEN; printf '\n'
-export VOID_GITHUB_TOKEN
-```
-
-**Zsh (macOS):**
-
-```zsh
-read -s "VOID_GITHUB_TOKEN?GitHub token: "
-export VOID_GITHUB_TOKEN
-```
-
-**PowerShell (Windows):**
-
-```powershell
-$secureToken = Read-Host "GitHub token" -AsSecureString
-$env:VOID_GITHUB_TOKEN = [System.Net.NetworkCredential]::new("", $secureToken).Password
-```
-
-These commands set the token for the current terminal session. Do not put the token in a command, source file, or public repository.
+The OAuth App used by the client must have Device Flow enabled. The current default build repository is public; OAuth Apps cannot request the fine-grained **Actions: read** permission for private repositories. Use a GitHub App with Actions read permission if private repository support is needed.
 
 <br />
 

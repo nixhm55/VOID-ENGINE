@@ -9,6 +9,8 @@ use std::{
 use reqwest::{header, Client, Url};
 use serde_json::{json, Value};
 
+mod auth;
+
 const DEFAULT_REPOSITORY: &str = "nixhm55/VOID-ENGINE";
 const BUILD_PROXY_ENDPOINT: &str = "https://engineproxy.vercel.app/api";
 const API_VERSION: &str = "2026-03-10";
@@ -24,25 +26,34 @@ struct Arguments {
 enum ParseResult {
     Help,
     Version,
+    Login,
     Run(Arguments),
 }
 
 fn usage() -> &'static str {
     "VOID Cloud Builder\n\n\
-     Usage: void <URL> [--name <NAME>] [--icon-url <URL>]\n\n\
+     Usage: void login\n\
+            void <URL> [--name <NAME>] [--icon-url <URL>]\n\n\
      Options:\n\
+       login               Sign in to GitHub and save credentials securely\n\
        --name <NAME>       Name shown for the generated app\n\
        --icon-url <URL>    Optional PNG/ICO icon URL\n\
        -h, --help          Show this help\n\
        -V, --version       Show the client version\n\n\
      Environment:\n\
-       VOID_GITHUB_TOKEN        GitHub token with Actions: read permission for polling/downloads\n\
        VOID_GITHUB_REPOSITORY   Build repository for polling (default: nixhm55/VOID-ENGINE)\n\
      Downloaded ZIPs and extracted packages are saved in the current folder."
 }
 
 fn parse_args() -> Result<ParseResult, String> {
     let mut args = env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("login") {
+        args.next();
+        if args.next().is_some() {
+            return Err("`void login` does not accept additional arguments".to_string());
+        }
+        return Ok(ParseResult::Login);
+    }
     let mut target_url = None;
     let mut app_name = None;
     let mut icon_url = None;
@@ -454,19 +465,7 @@ async fn download_artifacts(
 }
 
 async fn dispatch(arguments: Arguments) -> Result<(), String> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_| "could not initialize the HTTPS crypto provider".to_string())?;
-
-    let token = env::var("VOID_GITHUB_TOKEN")
-        .or_else(|_| env::var("GH_TOKEN"))
-        .or_else(|_| env::var("GITHUB_TOKEN"))
-        .map_err(|_| {
-            "set VOID_GITHUB_TOKEN to a GitHub token with Actions: read permission for build polling and artifact downloads".to_string()
-        })?;
-    if token.trim().is_empty() {
-        return Err("VOID_GITHUB_TOKEN is empty".to_string());
-    }
+    let token = auth::github_token()?;
 
     let repository = env_value("VOID_GITHUB_REPOSITORY", DEFAULT_REPOSITORY);
     let (owner, repo) = validate_repository(&repository)?;
@@ -477,11 +476,7 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| title_from_url(&arguments.target_url));
     let icon_url = arguments.icon_url.unwrap_or_default();
-    let client = Client::builder()
-        .user_agent(concat!("void-cli/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("could not create the cloud build client: {error}"))?;
+    let client = http_client()?;
 
     let mut payload = json!({
         "target_url": arguments.target_url,
@@ -529,7 +524,11 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
         .get("html_url")
         .and_then(Value::as_str)
         .or_else(|| details.get("run_url").and_then(Value::as_str))
-        .or_else(|| workflow_run.and_then(|run| run.get("html_url")).and_then(Value::as_str))
+        .or_else(|| {
+            workflow_run
+                .and_then(|run| run.get("html_url"))
+                .and_then(Value::as_str)
+        })
         .unwrap_or("https://github.com/actions");
     println!("Started cloud build for {app_name}: {run_url}");
     wait_for_run(&client, token.trim(), &repository, run_id, run_url).await?;
@@ -540,6 +539,22 @@ async fn dispatch(arguments: Arguments) -> Result<(), String> {
         output_dir.display()
     );
     Ok(())
+}
+
+fn http_client() -> Result<Client, String> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| "could not initialize the HTTPS crypto provider".to_string())?;
+    Client::builder()
+        .user_agent(concat!("void-cli/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("could not create the HTTPS client: {error}"))
+}
+
+async fn login() -> Result<(), String> {
+    let client = http_client()?;
+    auth::login(&client).await
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -553,6 +568,13 @@ async fn main() -> ExitCode {
             println!("void {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        Ok(ParseResult::Login) => match login().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(ParseResult::Run(arguments)) => match dispatch(arguments).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
