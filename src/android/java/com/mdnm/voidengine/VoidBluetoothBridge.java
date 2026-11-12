@@ -13,8 +13,10 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.pm.PackageManager;
@@ -27,6 +29,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -41,7 +44,7 @@ import java.util.concurrent.TimeUnit;
 final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionReceiver {
     static final int PERMISSION_REQUEST = 0x5648;
     private static final String PREFS = "void_bluetooth_permissions";
-    private static final int SCAN_SECONDS = 8;
+    private static final int SCAN_SECONDS = 12;
     private static final long OP_TIMEOUT_SECONDS = 20;
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
@@ -214,14 +217,18 @@ final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionRecei
         };
 
         try {
-            scanner.startScan(callback);
+            ScanSettings settings = new ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                    .setReportDelay(0)
+                    .build();
+            scanner.startScan(Collections.<ScanFilter>emptyList(), settings, callback);
             scanFinished.await(SCAN_SECONDS, TimeUnit.SECONDS);
         } finally {
             try { scanner.stopScan(callback); } catch (RuntimeException ignored) { }
         }
         if (scanError[0] >= 0) {
-            throw new BridgeException("Android BLE scanning failed (error " + scanError[0]
-                    + "). Check Bluetooth and Location settings, then try again.", "NetworkError");
+            throw new BridgeException(scanFailureMessage(scanError[0]), "NetworkError");
         }
         ArrayList<BluetoothDevice> matches = new ArrayList<>();
         ArrayList<BluetoothDevice> scanned;
@@ -233,7 +240,8 @@ final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionRecei
             String locationHint = Build.VERSION.SDK_INT < 31
                     ? " Make sure device Location is on; Android 11 and earlier require it for BLE scans."
                     : " Make sure the device is advertising Bluetooth Low Energy and is nearby.";
-            throw new BridgeException("No matching Bluetooth LE devices were found." + locationHint,
+            throw new BridgeException("No nearby Bluetooth LE advertisers were found during the scan."
+                    + locationHint + " Put a BLE accessory in pairing or advertising mode and try again.",
                     "NotFoundError");
         }
         BluetoothDevice selected = chooseDevice(matches);
@@ -247,6 +255,35 @@ final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionRecei
         String name = selected.getName();
         result.put("name", name == null || name.isEmpty() ? JSONObject.NULL : name);
         return result;
+    }
+
+    private static String scanFailureMessage(int errorCode) {
+        String reason;
+        switch (errorCode) {
+            case ScanCallback.SCAN_FAILED_ALREADY_STARTED:
+                reason = "a Bluetooth scan is already running";
+                break;
+            case ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED:
+                reason = "Android could not register this app with the Bluetooth scanner";
+                break;
+            case ScanCallback.SCAN_FAILED_INTERNAL_ERROR:
+                reason = "the Android Bluetooth service reported an internal error";
+                break;
+            case ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED:
+                reason = "this device does not support BLE scanning";
+                break;
+            case ScanCallback.SCAN_FAILED_OUT_OF_HARDWARE_RESOURCES:
+                reason = "the Bluetooth adapter has no scan resources available";
+                break;
+            case ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY:
+                reason = "Android throttled repeated scan attempts; wait briefly before trying again";
+                break;
+            default:
+                reason = "Android returned scan error " + errorCode;
+                break;
+        }
+        return "Android could not start the Bluetooth LE scan because " + reason
+                + ". Check Bluetooth and Location settings, then try again.";
     }
 
     private JSONArray getDevices(String origin) throws Exception {
