@@ -142,7 +142,7 @@ jobs:
         format: ${{ fromJSON(inputs.windows_format == 'both' && '["exe","msi"]' || format('["{0}"]', inputs.windows_format)) }}
     steps:
       - uses: actions/checkout@v7
-      - name: Configure app metadata
+      - name: Prepare Windows app metadata, icon, and master binary
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -154,17 +154,9 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
-        run: node scripts/configure-build.mjs
-      - name: Discover and prepare app icon
-        env:
-          TARGET_URL: ${{ inputs.target_url }}
-          ICON_URL: ${{ inputs.icon_url }}
-        run: node scripts/prepare-branding.mjs
-      - name: Download Windows master binary
-        env:
           MASTER_BINARY_ASSET: void-windows-x86_64.exe
           MASTER_BINARY_OUTPUT: target/master/void.exe
-        run: node scripts/download-master-binary.mjs
+        run: node scripts/prepare-windows-build.mjs
       - name: Apply per-app Windows executable icon
         shell: pwsh
         run: ./scripts/set-windows-icon.ps1 -Executable target/master/void.exe -IconFile branding/app.ico
