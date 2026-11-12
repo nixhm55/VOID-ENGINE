@@ -1,0 +1,29 @@
+{
+  "name": "@nixhm55/void-engine",
+  "version": "0.1.0",
+  "description": "The VOID Engine cloud build command-line client",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nixhm55/VOID-ENGINE.git",
+    "directory": "npm/void-engine"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "homepage": "https://github.com/nixhm55/VOID-ENGINE#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "void": "bin/void.js"
+  },
+  "files": [
+    "bin/void.js",
+    "install.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node install.js"
+  }
+}

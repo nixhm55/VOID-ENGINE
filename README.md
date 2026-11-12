@@ -81,6 +81,8 @@ Run `void login`. The client displays a one-time code and GitHub verification UR
 
 The OAuth App used by the client must have Device Flow enabled. The current default build repository is public; OAuth Apps cannot request the fine-grained **Actions: read** permission for private repositories. Use a GitHub App with Actions read permission if private repository support is needed.
 
+The CLI package is also configured for GitHub Packages as `@nixhm55/void-engine`. The **Publish VOID Engine CLI to GitHub Packages** workflow publishes it when manually run or when a `void-engine-v<version>` release is published. GitHub Packages installs require authentication; see [`npm/void-engine/README.md`](npm/void-engine/README.md).
+
 <br />
 
 <h2 align="center">Request a build</h2>
