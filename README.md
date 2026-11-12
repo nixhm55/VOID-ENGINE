@@ -16,11 +16,11 @@ The platform builds run in parallel. Total time depends on GitHub runner availab
 
 <h2 align="center">Engine profiles</h2>
 
-Choose one profile in the **Build VOID** workflow. **Void Engine Lite** keeps the existing small wrapper and omits native geolocation and Bluetooth. **Void Engine Max** includes the same base wrapper plus geolocation and a native Bluetooth Low Energy bridge. Separate Lite and Max master-binary workflows publish both profiles when changes are pushed to `main`; each app build downloads one complete binary for its selected profile.
+Choose one profile in the **Build VOID** workflow. **Void Engine Lite — Lightweight** keeps the existing small wrapper and omits native geolocation and Bluetooth. **Void Engine Max — Full features** includes the same base wrapper plus geolocation and a native Bluetooth Low Energy bridge. Separate Lite and Max master-binary workflows publish both profiles when changes are pushed to `main`; each app build downloads one complete binary for its selected profile. The macOS master release includes Intel, Apple Silicon, and universal binaries; the app workflow uses the universal build by default.
 
 In Max, secure HTTPS sites can use `navigator.bluetooth` to request a nearby BLE device, connect to its GATT services, read and write characteristics, and receive notifications. VOID asks for origin access with a native three-choice prompt, then shows a native device picker. Bluetooth is limited to BLE; classic Bluetooth and Web Bluetooth APIs outside this supported subset are not exposed. Android uses the platform BLE APIs; macOS, Windows, and Linux use the system BLE stack through the native engine.
 
-Max location uses each platform's location service. On Android, granting VOID location permission does not switch on device-wide Location; if it is off, VOID opens Android's Location settings and waits for you to turn it on. Android 11 and earlier also require Location to be on for BLE scanning. The Linux Debian package installs GeoClue; an AppImage needs the host system's GeoClue service available.
+Max location uses each platform's location service. On macOS, the generated app declares the macOS Core Location usage description. On Android, granting VOID location permission does not switch on device-wide Location; if it is off, VOID opens Android's Location settings and waits for you to turn it on. Android 11 and earlier also require Location to be on for BLE scanning. The Linux Debian package installs GeoClue; an AppImage needs the host system's GeoClue service available.
 
 <h2 align="center">Build with GitHub Actions</h2>
 

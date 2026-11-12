@@ -45,6 +45,40 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
+function generatedFallbackIcon() {
+  const size = 256;
+  const rgba = Buffer.alloc(size * size * 4);
+  const setPixel = (x, y, color) => {
+    const offset = (y * size + x) * 4;
+    rgba[offset] = color[0];
+    rgba[offset + 1] = color[1];
+    rgba[offset + 2] = color[2];
+    rgba[offset + 3] = color[3] ?? 255;
+  };
+  const segmentDistance = (x, y, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const length = dx * dx + dy * dy;
+    const t = length ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / length)) : 0;
+    return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+  };
+  const background = [24, 29, 40, 255];
+  const orange = [245, 133, 25, 255];
+  const white = [255, 255, 255, 255];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const cx = Math.max(48, Math.min(size - 48, x));
+      const cy = Math.max(48, Math.min(size - 48, y));
+      if (Math.hypot(x - cx, y - cy) <= 48) setPixel(x, y, background);
+      const radius = Math.hypot(x - 128, y - 128);
+      if (radius >= 61 && radius <= 79) setPixel(x, y, orange);
+      if (segmentDistance(x, y, 86, 93, 128, 165) <= 10
+          || segmentDistance(x, y, 128, 165, 170, 93) <= 10) setPixel(x, y, white);
+    }
+  }
+  return encodePng(size, size, rgba);
+}
+
 function pngDimensions(bytes) {
   if (bytes.length < 24 || !bytes.subarray(0, 8).equals(pngSignature)) return null;
   const width = bytes.readUInt32BE(16);
@@ -273,7 +307,8 @@ async function discoverIcon() {
     console.log(`Using app icon from ${best.url} (${best.dimensions.width}x${best.dimensions.height})`);
     return best.png;
   }
-  throw new Error('No supported PNG/ICO icon was found on the target site or its web app manifest. Provide its original icon URL through ICON_URL.');
+  console.warn('No supported site icon was found; using the generated VOID fallback icon.');
+  return generatedFallbackIcon();
 }
 
 fs.mkdirSync(outputDir, { recursive: true });

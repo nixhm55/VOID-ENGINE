@@ -54,7 +54,7 @@ const info = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-/
   '<key>NSCameraUsageDescription</key><string>VOID needs camera access for websites you choose to use.</string>\n' +
   '<key>NSMicrophoneUsageDescription</key><string>VOID needs microphone access for websites you choose to use.</string>\n' +
   (engineProfile === 'max'
-    ? '<key>NSLocationWhenInUseUsageDescription</key><string>VOID uses location for websites you choose to use.</string>\n' +
+    ? '<key>NSLocationUsageDescription</key><string>VOID uses location for websites you choose to use.</string>\n' +
       '<key>NSBluetoothAlwaysUsageDescription</key><string>VOID connects to Bluetooth devices when you choose to use a website feature.</string>\n'
     : '') +
   '</dict></plist>\n';

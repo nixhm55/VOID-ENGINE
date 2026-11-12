@@ -5,14 +5,13 @@ on:
     inputs:
       engine_profile:
         description: >-
-          Choose one engine profile. Void Engine Lite is the existing lightweight build without GPS or Bluetooth.
-          Void Engine Max includes GPS and the native Bluetooth bridge.
+          Choose one profile. Lite is lightweight and has no GPS or Bluetooth. Max adds GPS and the native Bluetooth bridge.
         type: choice
         required: true
         options:
-          - Void Engine Lite
-          - Void Engine Max
-        default: Void Engine Lite
+          - Void Engine Lite — Lightweight
+          - Void Engine Max — Full features
+        default: Void Engine Lite — Lightweight
       build_macos:
         description: Build macOS DMG
         type: boolean
@@ -39,17 +38,17 @@ on:
         required: false
         default: ''
       app_name:
-        description: App name (leave as void to use the website domain)
+        description: App name (leave blank to use the website domain)
         type: string
-        required: true
-        default: void
+        required: false
+        default: ''
       android_package:
         description: Android application ID (blank derives it from the app name)
         type: string
         required: false
         default: ''
       icon_url:
-        description: Optional PNG or ICO icon URL (blank discovers the website favicon)
+        description: Optional PNG or ICO icon URL (blank uses the site icon or a generated default)
         type: string
         required: false
         default: ''
@@ -79,7 +78,12 @@ on:
         required: false
         default: false
       multi_arch:
-        description: Use the universal macOS master binary
+        description: Use the universal macOS master binary (Intel + Apple Silicon)
+        type: boolean
+        required: false
+        default: true
+      hide_title_bar:
+        description: Hide the title bar (macOS only)
         type: boolean
         required: false
         default: true
@@ -118,16 +122,18 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
         run: node scripts/configure-build.mjs
       - name: Discover and prepare app icon
         env:
           TARGET_URL: ${{ inputs.target_url }}
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
-      - name: Download universal master binary
+      - name: Download selected macOS master binary
         env:
-          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
-          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal' }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.multi_arch && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal') || format('void-engine-{0}-macos-{1}', inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite', runner.arch == 'ARM64' && 'aarch64' || 'x86_64') }}
           MASTER_BINARY_OUTPUT: target/master/void
         run: node scripts/download-master-binary.mjs
       - name: Package macOS app and DMG
@@ -136,7 +142,7 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
           MASTER_BINARY_PATH: target/master/void
-          ENGINE_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max' && 'max' || 'lite' }}
+          ENGINE_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
         run: node scripts/package-macos-dmg.mjs
       - uses: actions/upload-artifact@v7.0.2
         with:
@@ -195,8 +201,10 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
-          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
-          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
           MASTER_BINARY_OUTPUT: target/master/void.exe
         run: node scripts/prepare-windows-build.mjs
       - name: Apply per-app Windows executable icon
@@ -267,6 +275,7 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
         run: node scripts/configure-build.mjs
       - name: Discover and prepare app icon
         env:
@@ -275,8 +284,9 @@ jobs:
         run: node scripts/prepare-branding.mjs
       - name: Download Linux master binary
         env:
-          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
-          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
           MASTER_BINARY_OUTPUT: target/master/void
         run: node scripts/download-master-binary.mjs
       - name: Package Debian archive
@@ -375,6 +385,7 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
         run: node scripts/configure-build.mjs
       - name: Discover and prepare app icon
         env:
@@ -431,8 +442,9 @@ jobs:
           key: android-master-apk-v2-${{ inputs.engine_profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'src/android/java/**', 'dist/index.html', 'scripts/prepare-branding.mjs', 'scripts/package-android-apk.sh', '.github/workflows/master-binaries.yml') }}
       - name: Download Android master APK
         env:
-          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
-          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
           MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
         run: |
           if [[ -s target/master/void-android-template.apk ]]; then
@@ -447,7 +459,7 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
           APP_VERSION: ${{ inputs.version }}
-          APP_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max' && 'max' || 'lite' }}
+          APP_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
         run: bash scripts/package-android-master.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.apk"
       - uses: actions/upload-artifact@v7.0.2
         with:

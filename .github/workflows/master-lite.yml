@@ -30,14 +30,18 @@ jobs:
           cargo build --release --bin void --no-default-features --features "$ENGINE_PROFILE" --target x86_64-apple-darwin
           cargo build --release --bin void --no-default-features --features "$ENGINE_PROFILE" --target aarch64-apple-darwin
           mkdir -p output
+          cp target/x86_64-apple-darwin/release/void "output/void-engine-${ENGINE_PROFILE}-macos-x86_64"
+          cp target/aarch64-apple-darwin/release/void "output/void-engine-${ENGINE_PROFILE}-macos-aarch64"
           lipo -create -output "output/void-engine-${ENGINE_PROFILE}-macos-universal" \
             target/x86_64-apple-darwin/release/void \
             target/aarch64-apple-darwin/release/void
+          lipo -verify_arch x86_64 arm64 "output/void-engine-${ENGINE_PROFILE}-macos-universal"
+          lipo -info "output/void-engine-${ENGINE_PROFILE}-macos-universal"
           chmod +x "output/void-engine-${ENGINE_PROFILE}-macos-universal"
       - uses: actions/upload-artifact@v7
         with:
           name: master-${{ env.ENGINE_PROFILE }}-macos
-          path: output/void-engine-${{ env.ENGINE_PROFILE }}-macos-universal
+          path: output/void-engine-${{ env.ENGINE_PROFILE }}-macos-*
           if-no-files-found: error
 
   master-windows:
@@ -171,6 +175,8 @@ jobs:
           set -euo pipefail
           profile="$ENGINE_PROFILE"
           test -f "master-assets/void-engine-${profile}-macos-universal"
+          test -f "master-assets/void-engine-${profile}-macos-x86_64"
+          test -f "master-assets/void-engine-${profile}-macos-aarch64"
           test -f "master-assets/void-engine-${profile}-windows-x86_64.exe"
           test -f "master-assets/void-engine-${profile}-linux-x86_64"
           test -f "master-assets/void-engine-${profile}-android-template.apk"

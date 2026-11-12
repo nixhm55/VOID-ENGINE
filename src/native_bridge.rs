@@ -292,6 +292,18 @@ mod macos_location {
         fn objc_msgSend();
     }
 
+    // Load CoreLocation before asking the Objective-C runtime for its class.
+    // CoreLocation does not export a stable Objective-C class linker symbol
+    // for Rust to reference directly on every supported macOS SDK.
+    #[link(name = "System")]
+    unsafe extern "C" {
+        fn dlopen(filename: *const c_char, mode: i32) -> *mut c_void;
+    }
+
+    const RTLD_NOW: i32 = 2;
+    const RTLD_GLOBAL: i32 = 8;
+    static CORE_LOCATION_FRAMEWORK: OnceLock<Result<usize, ()>> = OnceLock::new();
+
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         static kCFRunLoopDefaultMode: Object;
@@ -313,6 +325,17 @@ mod macos_location {
         }
 
         unsafe {
+            let framework = CORE_LOCATION_FRAMEWORK.get_or_init(|| {
+                let handle = dlopen(
+                    c"/System/Library/Frameworks/CoreLocation.framework/CoreLocation".as_ptr(),
+                    RTLD_NOW | RTLD_GLOBAL,
+                );
+                if handle.is_null() { Err(()) } else { Ok(handle as usize) }
+            });
+            if framework.is_err() {
+                clear_sender();
+                return Err("Could not load the macOS CoreLocation framework.".into());
+            }
             let manager_class = objc_getClass(c"CLLocationManager".as_ptr());
             if manager_class.is_null() {
                 clear_sender();

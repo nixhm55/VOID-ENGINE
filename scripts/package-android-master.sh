@@ -62,6 +62,8 @@ application = root.find("application")
 if application is None:
     raise SystemExit("Android manifest has no application element")
 application.set("{%s}label" % android, app_name)
+application.set("{%s}icon" % android, "@mipmap/ic_launcher")
+application.set("{%s}roundIcon" % android, "@mipmap/ic_launcher_round")
 # Keep the framework theme reference fully qualified. If it is emitted as an
 # app-local @style reference, AAPT2 looks for a nonexistent app resource.
 application.set("{%s}theme" % android, "@android:style/Theme.Material.NoActionBar")

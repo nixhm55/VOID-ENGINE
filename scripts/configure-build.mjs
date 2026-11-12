@@ -35,7 +35,7 @@ const config = JSON.parse(fs.readFileSync('void.json', 'utf8'));
 config.title = appName;
 config.url = inputUrl;
 config.icon_url = (process.env.ICON_URL || '').trim();
-config.hide_title_bar = true;
+config.hide_title_bar = process.env.APP_HIDE_TITLE_BAR !== 'false';
 if (inputUrl) delete config.assets;
 config.width = Number(process.env.APP_WIDTH) || config.width || 1200;
 config.height = Number(process.env.APP_HEIGHT) || config.height || 780;
