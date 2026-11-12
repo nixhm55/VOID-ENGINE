@@ -45,36 +45,6 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-function fallbackIcon() {
-  const size = 256;
-  const pixels = Buffer.alloc(size * size * 4);
-  const polygon = [[72, 64], [106, 64], [128, 115], [150, 64], [184, 64], [128, 194]];
-  const inside = (x, y) => {
-    let value = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const [xi, yi] = polygon[i];
-      const [xj, yj] = polygon[j];
-      if (((yi > y) !== (yj > y)) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) value = !value;
-    }
-    return value;
-  };
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const offset = (y * size + x) * 4;
-      const radius = 44;
-      const cx = x < radius ? radius : x >= size - radius ? size - radius - 1 : x;
-      const cy = y < radius ? radius : y >= size - radius ? size - radius - 1 : y;
-      const rounded = (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2;
-      const mark = inside(x, y);
-      pixels[offset] = mark ? 255 : rounded ? 24 : 0;
-      pixels[offset + 1] = mark ? 132 : rounded ? 25 : 0;
-      pixels[offset + 2] = mark ? 0 : rounded ? 29 : 0;
-      pixels[offset + 3] = rounded ? 255 : 0;
-    }
-  }
-  return encodePng(size, size, pixels);
-}
-
 function pngDimensions(bytes) {
   if (bytes.length < 24 || !bytes.subarray(0, 8).equals(pngSignature)) return null;
   const width = bytes.readUInt32BE(16);
@@ -167,82 +137,11 @@ function parseIconLinks(html, pageUrl) {
     try {
       const url = new URL(attrs.href, pageUrl);
       if (url.protocol === 'https:' || url.protocol === 'http:') {
-        const sizes = (attrs.sizes || '').match(/\d+\s*x\s*\d+/gi) || [];
-        const area = sizes.reduce((largest, size) => {
-          const [width, height] = size.toLowerCase().split('x').map(Number);
-          return Math.max(largest, width * height);
-        }, 0);
-        links.push({
-          url: url.href,
-          score: /apple-touch-icon/i.test(rel) ? 0 : 1,
-          area,
-          png: /png/i.test(attrs.type || '') || /\.png(?:$|\?)/i.test(url.href) ? 0 : 1,
-        });
+        links.push({ url: url.href, score: /apple-touch-icon/i.test(rel) ? 1 : 0, png: /png/i.test(attrs.type || '') || /\.png(?:$|\?)/i.test(url.href) ? 0 : 1 });
       }
     } catch {}
   }
-  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
-    const attrs = {};
-    for (const attr of match[0].matchAll(/([\w:-]+)\s*=\s*(["'])(.*?)\2/gi)) attrs[attr[1].toLowerCase()] = attr[3];
-    if (!/^og:image$/i.test(attrs.property || '') || !attrs.content) continue;
-    try {
-      const url = new URL(attrs.content, pageUrl);
-      if (url.protocol === 'https:' || url.protocol === 'http:') links.push({ url: url.href, score: 2, area: 0, png: /\.png(?:$|\?)/i.test(url.href) ? 0 : 1 });
-    } catch {}
-  }
-  return links.sort((a, b) => a.score - b.score || b.area - a.area || a.png - b.png).map((item) => item.url);
-}
-
-function parseManifestHref(html, pageUrl) {
-  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
-    const attrs = {};
-    for (const attr of match[0].matchAll(/([\w:-]+)\s*=\s*(["'])(.*?)\2/gi)) attrs[attr[1].toLowerCase()] = attr[3];
-    if (!/(^|\s)manifest(\s|$)/i.test(attrs.rel || '') || !attrs.href) continue;
-    try {
-      const url = new URL(attrs.href, pageUrl);
-      if (url.protocol === 'https:' || url.protocol === 'http:') return url.href;
-    } catch {}
-  }
-  return null;
-}
-
-async function fetchManifestIcons(manifestUrl) {
-  if (!manifestUrl) return [];
-  try {
-    const response = await fetch(manifestUrl, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(8000),
-      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/manifest+json,application/json;q=0.9,*/*;q=0.2' },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const declaredLength = Number(response.headers.get('content-length') || 0);
-    if (declaredLength > maxIconBytes) throw new Error('Manifest exceeds the 256 KiB size limit');
-    const text = await response.text();
-    if (Buffer.byteLength(text) > maxIconBytes) throw new Error('Manifest exceeds the 256 KiB size limit');
-    const manifest = JSON.parse(text);
-    const icons = (Array.isArray(manifest.icons) ? manifest.icons : []).flatMap((icon) => {
-      if (!icon || typeof icon.src !== 'string') return [];
-      const type = typeof icon.type === 'string' ? icon.type.toLowerCase() : '';
-      if (type && !/^image\/(png|x-icon|vnd\.microsoft\.icon)$/.test(type)) return [];
-      if (!type && !/\.(png|ico)(?:$|\?)/i.test(icon.src)) return [];
-      try {
-        const url = new URL(icon.src, response.url || manifestUrl);
-        if (url.protocol !== 'https:' && url.protocol !== 'http:') return [];
-        const sizes = typeof icon.sizes === 'string' ? icon.sizes.match(/\d+\s*x\s*\d+/gi) || [] : [];
-        const area = sizes.reduce((largest, size) => {
-          const [width, height] = size.toLowerCase().split('x').map(Number);
-          return Math.max(largest, width * height);
-        }, 0);
-        return [{ url: url.href, area }];
-      } catch {
-        return [];
-      }
-    });
-    return icons.sort((a, b) => b.area - a.area).map((icon) => icon.url);
-  } catch (error) {
-    console.warn(`Could not inspect the app manifest for an icon: ${error.message}`);
-    return [];
-  }
+  return links.sort((a, b) => a.score - b.score || a.png - b.png).map((item) => item.url);
 }
 
 async function discoverIcon() {
@@ -257,12 +156,10 @@ async function discoverIcon() {
       if (response.ok) {
         const html = (await response.text()).slice(0, 2 * 1024 * 1024);
         const resolvedPageUrl = response.url || pageUrl;
-        const manifestUrl = parseManifestHref(html, resolvedPageUrl);
-        candidates.push(...await fetchManifestIcons(manifestUrl));
         candidates.push(...parseIconLinks(html, resolvedPageUrl));
       }
       const origin = new URL(pageUrl).origin;
-      candidates.push(`${origin}/apple-touch-icon.png`, `${origin}/favicon.png`, `${origin}/favicon.ico`);
+      candidates.push(`${origin}/favicon.ico`, `${origin}/favicon.png`, `${origin}/apple-touch-icon.png`);
     } catch (error) {
       console.warn(`Could not inspect the target page for an icon: ${error.message}`);
     }
@@ -280,8 +177,7 @@ async function discoverIcon() {
       console.warn(`Skipping app icon ${candidate}: ${error.message}`);
     }
   }
-  console.warn('No supported PNG/ICO favicon found; using the built-in lightweight icon.');
-  return fallbackIcon();
+  throw new Error('No supported PNG/ICO site icon was found. Provide the site icon URL through ICON_URL.');
 }
 
 fs.mkdirSync(outputDir, { recursive: true });
