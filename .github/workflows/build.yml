@@ -274,7 +274,8 @@ jobs:
         run: bash scripts/package-linux-deb.sh target/master/void "output/${{ steps.configure.outputs.app_slug }}.deb"
       - name: Cache minimal Linux AppImage dependency
         if: ${{ matrix.format == 'appimage' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
+        continue-on-error: true
         with:
           path: .cache/linux-apt-archives
           key: ubuntu-24.04-appimage-fuse2-v1
@@ -293,7 +294,8 @@ jobs:
           fi
       - name: Cache AppImage tool
         if: ${{ matrix.format == 'appimage' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
+        continue-on-error: true
         with:
           path: .cache/appimagetool-x86_64.AppImage
           key: appimagetool-x86_64-v2
@@ -366,13 +368,16 @@ jobs:
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
       - name: Cache Android SDK platform, build tools, and signing key
-        uses: actions/cache@v4
+        uses: actions/cache@v6
+        continue-on-error: true
         with:
           path: |
             /usr/local/lib/android/sdk/platforms/android-33
             /usr/local/lib/android/sdk/build-tools/34.0.0
-            ~/.android/debug.keystore
-          key: android-sdk-platform-33-build-tools-34.0.0-v3
+            /home/runner/.android/debug.keystore
+          key: android-sdk-v4-${{ runner.os }}-platform-33-build-tools-34.0.0-${{ hashFiles('.github/workflows/build.yml', 'scripts/package-android-master.sh') }}
+          restore-keys: |
+            android-sdk-v4-${{ runner.os }}-
       - name: Ensure Android packaging tools and signing key
         run: |
           set -euo pipefail
@@ -396,12 +401,14 @@ jobs:
           fi
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
       - name: Cache Android APK repackager
-        uses: actions/cache@v4
+        uses: actions/cache@v6
+        continue-on-error: true
         with:
           path: .cache/apktool-3.0.3.jar
           key: apktool-3.0.3-dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423
       - name: Cache Android master APK
-        uses: actions/cache@v4
+        uses: actions/cache@v6
+        continue-on-error: true
         with:
           path: target/master/void-android-template.apk
           # Tie this cache to the inputs that produce the generic APK. App
