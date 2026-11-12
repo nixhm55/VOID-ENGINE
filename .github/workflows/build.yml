@@ -3,6 +3,16 @@ name: Build VOID
 on:
   workflow_dispatch:
     inputs:
+      engine_profile:
+        description: >-
+          Choose one engine profile. Void Engine Lite is the existing lightweight build without GPS or Bluetooth.
+          Void Engine Max includes GPS and the native Bluetooth bridge.
+        type: choice
+        required: true
+        options:
+          - Void Engine Lite
+          - Void Engine Max
+        default: Void Engine Lite
       build_macos:
         description: Build macOS DMG
         type: boolean
@@ -116,7 +126,8 @@ jobs:
         run: node scripts/prepare-branding.mjs
       - name: Download universal master binary
         env:
-          MASTER_BINARY_ASSET: void-macos-universal
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal' }}
           MASTER_BINARY_OUTPUT: target/master/void
         run: node scripts/download-master-binary.mjs
       - name: Package macOS app and DMG
@@ -125,6 +136,7 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
           MASTER_BINARY_PATH: target/master/void
+          ENGINE_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max' && 'max' || 'lite' }}
         run: node scripts/package-macos-dmg.mjs
       - uses: actions/upload-artifact@v7.0.2
         with:
@@ -183,7 +195,8 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
-          MASTER_BINARY_ASSET: void-windows-x86_64.exe
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
           MASTER_BINARY_OUTPUT: target/master/void.exe
         run: node scripts/prepare-windows-build.mjs
       - name: Apply per-app Windows executable icon
@@ -262,7 +275,8 @@ jobs:
         run: node scripts/prepare-branding.mjs
       - name: Download Linux master binary
         env:
-          MASTER_BINARY_ASSET: void-linux-x86_64
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
           MASTER_BINARY_OUTPUT: target/master/void
         run: node scripts/download-master-binary.mjs
       - name: Package Debian archive
@@ -414,10 +428,11 @@ jobs:
           # Tie this cache to the inputs that produce the generic APK. App
           # metadata and branding are injected after download, so they must
           # not invalidate the reusable master binary.
-          key: android-master-apk-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'src/android/java/**', 'dist/index.html', 'scripts/prepare-branding.mjs', 'scripts/package-android-apk.sh', '.github/workflows/master-binaries.yml') }}
+          key: android-master-apk-v2-${{ inputs.engine_profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'src/android/java/**', 'dist/index.html', 'scripts/prepare-branding.mjs', 'scripts/package-android-apk.sh', '.github/workflows/master-binaries.yml') }}
       - name: Download Android master APK
         env:
-          MASTER_BINARY_ASSET: void-android-template.apk
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
           MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
         run: |
           if [[ -s target/master/void-android-template.apk ]]; then
@@ -432,6 +447,7 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
           APP_VERSION: ${{ inputs.version }}
+          APP_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max' && 'max' || 'lite' }}
         run: bash scripts/package-android-master.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.apk"
       - uses: actions/upload-artifact@v7.0.2
         with:

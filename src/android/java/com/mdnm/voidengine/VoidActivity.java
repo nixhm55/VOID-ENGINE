@@ -167,8 +167,11 @@ public final class VoidActivity extends NativeActivity {
     private boolean notificationPermissionRequestInFlight;
     private final ArrayList<Integer> pendingNotificationRequests = new ArrayList<>();
     private final AtomicInteger nextNotificationId = new AtomicInteger(1);
+    private boolean geolocationEnabled;
 
-    public void configureVoidWebView(final WebView webView, String allowedUrl) {
+    public void configureVoidWebView(final WebView webView, String allowedUrl,
+            boolean geolocationEnabled) {
+        this.geolocationEnabled = geolocationEnabled;
         notificationWebView = webView;
         mediaWebView = webView;
         notificationOrigin = secureOrigin(allowedUrl);
@@ -177,7 +180,7 @@ public final class VoidActivity extends NativeActivity {
         webView.addJavascriptInterface(
                 new VoidNotificationBridge(notificationBridgeToken), "VoidNativeNotifications");
         webView.addJavascriptInterface(new VoidMediaBridge(mediaBridgeToken), "VoidNativeMedia");
-        webView.getSettings().setGeolocationEnabled(true);
+        webView.getSettings().setGeolocationEnabled(geolocationEnabled);
         webView.getSettings().setSupportMultipleWindows(true);
 
         ViewParent parent = webView.getParent();
@@ -455,6 +458,10 @@ public final class VoidActivity extends NativeActivity {
 
     private void requestLocationPermission(
             String origin, GeolocationPermissions.Callback callback) {
+        if (!geolocationEnabled) {
+            callback.invoke(origin, false, true);
+            return;
+        }
         if (origin == null || !origin.toLowerCase(Locale.ROOT).startsWith("https://")) {
             callback.invoke(origin, false, true);
             return;

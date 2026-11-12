@@ -32,31 +32,35 @@ struct NotificationMessage {
 }
 
 pub(crate) fn install(builder: WebViewBuilder, allowed_host: Option<String>) -> WebViewBuilder {
-    let Some(allowed_host) = allowed_host else {
+    if allowed_host.is_none() {
         return builder;
+    }
+
+    builder.with_initialization_script(NOTIFICATION_SHIM)
+}
+
+pub(crate) fn handle(request: &Request<String>, allowed_host: Option<&str>) -> bool {
+    let Some(allowed_host) = allowed_host else {
+        return false;
     };
+    let uri = request.uri();
+    if uri.scheme_str() != Some("https")
+        || uri.host().map(str::to_ascii_lowercase).as_deref() != Some(allowed_host)
+    {
+        return false;
+    }
 
-    builder
-        .with_initialization_script(NOTIFICATION_SHIM)
-        .with_ipc_handler(move |request: Request<String>| {
-            let uri = request.uri();
-            if uri.scheme_str() != Some("https")
-                || uri.host().map(str::to_ascii_lowercase).as_deref() != Some(allowed_host.as_str())
-            {
-                return;
-            }
+    let Ok(message) = serde_json::from_str::<NotificationMessage>(request.body()) else {
+        return false;
+    };
+    let title = limit_text(&message.title, 180);
+    let body = limit_text(&message.body, 600);
+    if title.is_empty() && body.is_empty() {
+        return true;
+    }
 
-            let Ok(message) = serde_json::from_str::<NotificationMessage>(request.body()) else {
-                return;
-            };
-            let title = limit_text(&message.title, 180);
-            let body = limit_text(&message.body, 600);
-            if title.is_empty() && body.is_empty() {
-                return;
-            }
-
-            thread::spawn(move || show_notification(&title, &body));
-        })
+    thread::spawn(move || show_notification(&title, &body));
+    true
 }
 
 fn limit_text(value: &str, max_chars: usize) -> String {

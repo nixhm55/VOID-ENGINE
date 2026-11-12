@@ -5,13 +5,15 @@ import { spawnSync } from 'node:child_process';
 const appName = (process.env.APP_NAME || 'VOID').trim();
 const appSlug = (process.env.APP_SLUG || 'void').trim();
 const version = (process.env.APP_VERSION || '1.0.0').trim();
+const engineProfile = (process.env.ENGINE_PROFILE || 'lite').trim();
 const binary = process.env.MASTER_BINARY_PATH || 'target/release/void';
 const outputDir = 'output';
 const staging = 'dmg_staging';
 const appPath = path.join(staging, `${appSlug}.app`);
 const contents = path.join(appPath, 'Contents');
 
-if (!appName || !/^[a-z0-9_]+$/.test(appSlug) || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+if (!appName || !/^[a-z0-9_]+$/.test(appSlug) || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)
+    || !['lite', 'max'].includes(engineProfile)) {
   throw new Error('Invalid app name, slug, or semantic app version');
 }
 
@@ -51,6 +53,10 @@ const info = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-/
   '<key>NSHighResolutionCapable</key><true/>\n' +
   '<key>NSCameraUsageDescription</key><string>VOID needs camera access for websites you choose to use.</string>\n' +
   '<key>NSMicrophoneUsageDescription</key><string>VOID needs microphone access for websites you choose to use.</string>\n' +
+  (engineProfile === 'max'
+    ? '<key>NSLocationWhenInUseUsageDescription</key><string>VOID uses location for websites you choose to use.</string>\n' +
+      '<key>NSBluetoothAlwaysUsageDescription</key><string>VOID connects to Bluetooth devices when you choose to use a website feature.</string>\n'
+    : '') +
   '</dict></plist>\n';
 await fs.writeFile(path.join(contents, 'Info.plist'), info);
 await fs.writeFile(path.join(contents, 'PkgInfo'), 'APPL????');

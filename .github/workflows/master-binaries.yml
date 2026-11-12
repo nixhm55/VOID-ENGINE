@@ -4,13 +4,27 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      engine_profile:
+        description: >-
+          Build one profile only. Lite keeps the existing small build and disables GPS/Bluetooth.
+          Max adds geolocation and the native BLE bridge.
+        type: choice
+        required: true
+        options:
+          - Void Engine Lite
+          - Void Engine Max
+        default: Void Engine Lite
 
 permissions:
   contents: read
 
+env:
+  ENGINE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile == 'Void Engine Max' && 'max' || 'lite' }}
+
 jobs:
   master-macos:
-    name: Build macOS universal master binary
+    name: Build macOS ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master binary
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -20,25 +34,25 @@ jobs:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
-          key: master-macos-universal-${{ steps.rust.outputs.cachekey }}
+          key: master-macos-universal-${{ env.ENGINE_PROFILE }}-${{ steps.rust.outputs.cachekey }}
           cache-targets: true
       - name: Build both macOS architectures
         run: |
-          cargo build --release --bin void --target x86_64-apple-darwin
-          cargo build --release --bin void --target aarch64-apple-darwin
+          cargo build --release --bin void --no-default-features --features "$ENGINE_PROFILE" --target x86_64-apple-darwin
+          cargo build --release --bin void --no-default-features --features "$ENGINE_PROFILE" --target aarch64-apple-darwin
           mkdir -p output
-          lipo -create -output output/void-macos-universal \
+          lipo -create -output "output/void-engine-${ENGINE_PROFILE}-macos-universal" \
             target/x86_64-apple-darwin/release/void \
             target/aarch64-apple-darwin/release/void
-          chmod +x output/void-macos-universal
+          chmod +x "output/void-engine-${ENGINE_PROFILE}-macos-universal"
       - uses: actions/upload-artifact@v7
         with:
-          name: master-macos
-          path: output/void-macos-universal
+          name: master-${{ env.ENGINE_PROFILE }}-macos
+          path: output/void-engine-${{ env.ENGINE_PROFILE }}-macos-universal
           if-no-files-found: error
 
   master-windows:
-    name: Build Windows master binary
+    name: Build Windows ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master binary
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
@@ -47,22 +61,22 @@ jobs:
         id: rust
       - uses: Swatinem/rust-cache@v2
         with:
-          key: master-windows-x64-${{ steps.rust.outputs.cachekey }}
+          key: master-windows-x64-${{ env.ENGINE_PROFILE }}-${{ steps.rust.outputs.cachekey }}
           cache-targets: true
       - name: Build Windows master binary
-        run: |
-          cargo build --release --bin void
-          New-Item -ItemType Directory -Force output | Out-Null
-          Copy-Item target/release/void.exe output/void-windows-x86_64.exe
         shell: pwsh
+        run: |
+          cargo build --release --bin void --no-default-features --features $env:ENGINE_PROFILE
+          New-Item -ItemType Directory -Force output | Out-Null
+          Copy-Item target/release/void.exe "output/void-engine-$env:ENGINE_PROFILE-windows-x86_64.exe"
       - uses: actions/upload-artifact@v7
         with:
-          name: master-windows
-          path: output/void-windows-x86_64.exe
+          name: master-${{ env.ENGINE_PROFILE }}-windows
+          path: output/void-engine-${{ env.ENGINE_PROFILE }}-windows-x86_64.exe
           if-no-files-found: error
 
   master-linux:
-    name: Build Linux master binary
+    name: Build Linux ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master binary
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -74,22 +88,22 @@ jobs:
         id: rust
       - uses: Swatinem/rust-cache@v2
         with:
-          key: master-linux-x64-${{ steps.rust.outputs.cachekey }}
+          key: master-linux-x64-${{ env.ENGINE_PROFILE }}-${{ steps.rust.outputs.cachekey }}
           cache-targets: true
       - name: Build Linux master binary
         run: |
-          cargo build --release --bin void
+          cargo build --release --bin void --no-default-features --features "$ENGINE_PROFILE"
           mkdir -p output
-          cp target/release/void output/void-linux-x86_64
-          chmod +x output/void-linux-x86_64
+          cp target/release/void "output/void-engine-${ENGINE_PROFILE}-linux-x86_64"
+          chmod +x "output/void-engine-${ENGINE_PROFILE}-linux-x86_64"
       - uses: actions/upload-artifact@v7
         with:
-          name: master-linux
-          path: output/void-linux-x86_64
+          name: master-${{ env.ENGINE_PROFILE }}-linux
+          path: output/void-engine-${{ env.ENGINE_PROFILE }}-linux-x86_64
           if-no-files-found: error
 
   master-android:
-    name: Build Android master APK
+    name: Build Android ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master APK
     runs-on: ubuntu-24.04
     env:
       WRY_ANDROID_PACKAGE: com.void.void
@@ -108,7 +122,7 @@ jobs:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
-          key: master-android-arm64-${{ steps.rust.outputs.cachekey }}
+          key: master-android-arm64-${{ env.ENGINE_PROFILE }}-${{ steps.rust.outputs.cachekey }}
           cache-targets: true
       - name: Ensure Android SDK and debug signing key
         run: |
@@ -119,10 +133,6 @@ jobs:
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/d8" \
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
             || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
-            # sdkmanager exits after accepting licenses, which can close the
-            # pipe while `yes` is still writing. Ignore that expected SIGPIPE
-            # but preserve sdkmanager's exit status so installation failures
-            # still fail this step.
             set +o pipefail
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "platforms;android-33" "build-tools;34.0.0"
             set -o pipefail
@@ -140,18 +150,18 @@ jobs:
           tool: cargo-apk
       - name: Build generic Android template
         run: |
-          cargo apk build --lib --release
+          cargo apk build --lib --release --no-default-features --features "$ENGINE_PROFILE"
           bash scripts/package-android-apk.sh target/release/apk/void.apk
           mkdir -p output
-          cp target/release/apk/void.apk output/void-android-template.apk
+          cp target/release/apk/void.apk "output/void-engine-${ENGINE_PROFILE}-android-template.apk"
       - uses: actions/upload-artifact@v7
         with:
-          name: master-android
-          path: output/void-android-template.apk
+          name: master-${{ env.ENGINE_PROFILE }}-android
+          path: output/void-engine-${{ env.ENGINE_PROFILE }}-android-template.apk
           if-no-files-found: error
 
   publish-master-release:
-    name: Publish reusable platform binaries
+    name: Publish reusable ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} platform binaries
     runs-on: ubuntu-24.04
     needs: [master-macos, master-windows, master-linux, master-android]
     permissions:
@@ -159,10 +169,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v7
         with:
-          pattern: master-*
+          pattern: master-${{ env.ENGINE_PROFILE }}-*
           path: master-assets
           merge-multiple: true
-      - name: Publish immutable master-binary release
+      - name: Publish versioned profile release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -170,10 +180,11 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          test -f master-assets/void-macos-universal
-          test -f master-assets/void-windows-x86_64.exe
-          test -f master-assets/void-linux-x86_64
-          test -f master-assets/void-android-template.apk
-          tag="engine-master-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}"
-          gh release create "$tag" master-assets/* --repo "$GH_REPO" --title "VOID master binaries $tag" \
-            --notes "Reusable engine binaries for app-specific packaging. Source: $GITHUB_SHA" --target "$GITHUB_SHA" --latest
+          profile="$ENGINE_PROFILE"
+          test -f "master-assets/void-engine-${profile}-macos-universal"
+          test -f "master-assets/void-engine-${profile}-windows-x86_64.exe"
+          test -f "master-assets/void-engine-${profile}-linux-x86_64"
+          test -f "master-assets/void-engine-${profile}-android-template.apk"
+          tag="engine-master-${profile}-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}"
+          gh release create "$tag" master-assets/* --repo "$GH_REPO" --title "VOID Engine ${profile} binaries $tag" \
+            --notes "Reusable ${profile} engine binaries for app-specific packaging. Source: $GITHUB_SHA" --target "$GITHUB_SHA" --latest=false

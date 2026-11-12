@@ -13,10 +13,11 @@ use tao::{
 };
 use wry::{
     http::{header::CONTENT_TYPE, Response, StatusCode},
-    PermissionResponse, WebViewBuilder,
+    WebViewBuilder,
 };
 
 mod navigation;
+mod permissions;
 mod user_agent;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
@@ -219,8 +220,12 @@ unsafe fn setup_native_activity_webview(
     env.call_method(
         activity_obj,
         "configureVoidWebView",
-        "(Landroid/webkit/WebView;Ljava/lang/String;)V",
-        &[JValue::Object(&webview), JValue::Object(&target_obj)],
+        "(Landroid/webkit/WebView;Ljava/lang/String;Z)V",
+        &[
+            JValue::Object(&webview),
+            JValue::Object(&target_obj),
+            JValue::Bool(cfg!(feature = "geolocation") as u8),
+        ],
     )?;
 
     if is_remote_url(&target) {
@@ -322,7 +327,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         navigation::apply(user_agent::apply(WebViewBuilder::new()))
             // Keep camera/microphone requests on the platform's normal
             // permission path instead of implicitly granting them.
-            .with_permission_handler(|_| PermissionResponse::Default)
+            .with_permission_handler(permissions::response)
             .with_url(&target)
             .build(&window)?
     } else {
@@ -330,7 +335,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         let entry_url = format!("void://localhost/{entry_file}");
 
         navigation::apply(user_agent::apply(WebViewBuilder::new()))
-            .with_permission_handler(|_| PermissionResponse::Default)
+            .with_permission_handler(permissions::response)
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');
                 let rel_path = if raw_path.is_empty() {

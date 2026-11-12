@@ -12,6 +12,7 @@ app_name="${APP_NAME:-VOID}"
 app_slug="${APP_SLUG:-void}"
 app_package="${ANDROID_PACKAGE:-com.void.void_engine}"
 app_version="${APP_VERSION:-1.0.0}"
+app_profile="${APP_PROFILE:-lite}"
 keystore="${CARGO_APK_RELEASE_KEYSTORE:-${HOME}/.android/debug.keystore}"
 keystore_password="${CARGO_APK_RELEASE_KEYSTORE_PASSWORD:-android}"
 
@@ -25,6 +26,7 @@ for tool in zipalign apksigner; do [[ -x "${tools_dir}/${tool}" ]] || { echo "Mi
 android_jar="${sdk_root}/platforms/android-33/android.jar"
 [[ -f "$android_jar" ]] || { echo "Missing Android framework resources: $android_jar" >&2; exit 1; }
 [[ -f "$template_apk" && -f void.json && -f branding/icon.png ]] || { echo "Template APK, void.json, or branding/icon.png is missing" >&2; exit 1; }
+[[ "$app_profile" == "lite" || "$app_profile" == "max" ]] || { echo "APP_PROFILE must be lite or max" >&2; exit 1; }
 
 mkdir -p "$(dirname "$apktool_jar")" "$(dirname "$output_apk")" .cache
 if [[ ! -f "$apktool_jar" ]] || [[ "$(sha256sum "$apktool_jar" | awk '{print $1}')" != "$apktool_sha256" ]]; then
@@ -45,11 +47,11 @@ mkdir -p "$framework_dir"
 java -jar "$apktool_jar" if "$android_jar" --frame-path "$framework_dir"
 java -jar "$apktool_jar" d --force --frame-path "$framework_dir" "$template_apk" --output "$decoded"
 
-python3 - "$decoded/AndroidManifest.xml" "$app_package" "$app_name" "$app_version" <<'PY'
+python3 - "$decoded/AndroidManifest.xml" "$app_package" "$app_name" "$app_version" "$app_profile" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 
-manifest_path, package_name, app_name, app_version = sys.argv[1:]
+manifest_path, package_name, app_name, app_version, profile = sys.argv[1:]
 android = "http://schemas.android.com/apk/res/android"
 ET.register_namespace("android", android)
 tree = ET.parse(manifest_path)
@@ -63,6 +65,31 @@ application.set("{%s}label" % android, app_name)
 # Keep the framework theme reference fully qualified. If it is emitted as an
 # app-local @style reference, AAPT2 looks for a nonexistent app resource.
 application.set("{%s}theme" % android, "@android:style/Theme.Material.NoActionBar")
+permissions = {
+    "android.permission.ACCESS_COARSE_LOCATION",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.BLUETOOTH",
+    "android.permission.BLUETOOTH_ADMIN",
+    "android.permission.BLUETOOTH_SCAN",
+    "android.permission.BLUETOOTH_CONNECT",
+}
+for node in list(root.findall("uses-permission")):
+    if node.get("{%s}name" % android) in permissions:
+        root.remove(node)
+if profile == "max":
+    for name, max_sdk in [
+        ("android.permission.ACCESS_COARSE_LOCATION", None),
+        ("android.permission.ACCESS_FINE_LOCATION", None),
+        ("android.permission.BLUETOOTH", "30"),
+        ("android.permission.BLUETOOTH_ADMIN", "30"),
+        ("android.permission.BLUETOOTH_SCAN", None),
+        ("android.permission.BLUETOOTH_CONNECT", None),
+    ]:
+        node = ET.Element("uses-permission")
+        node.set("{%s}name" % android, name)
+        if max_sdk:
+            node.set("{%s}maxSdkVersion" % android, max_sdk)
+        root.insert(0, node)
 tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 PY
 

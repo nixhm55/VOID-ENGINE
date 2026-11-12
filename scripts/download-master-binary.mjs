@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const repository = (process.env.MASTER_BINARY_REPOSITORY || 'nixhm55/VOID-ENGINE').trim();
+const releasePrefix = (process.env.MASTER_BINARY_RELEASE_PREFIX || '').trim();
 const asset = (process.env.MASTER_BINARY_ASSET || '').trim();
 const output = (process.env.MASTER_BINARY_OUTPUT || '').trim();
 
@@ -12,7 +13,27 @@ if (!/^[A-Za-z0-9_.-]+$/.test(asset) || !output) {
   throw new Error('MASTER_BINARY_ASSET and MASTER_BINARY_OUTPUT are required');
 }
 
-const url = `https://github.com/${repository}/releases/latest/download/${encodeURIComponent(asset)}`;
+let url;
+if (releasePrefix) {
+  if (!/^engine-master-(lite|max)-$/.test(releasePrefix)) {
+    throw new Error('MASTER_BINARY_RELEASE_PREFIX must be engine-master-lite- or engine-master-max-');
+  }
+  const releasesResponse = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=100`, {
+    signal: AbortSignal.timeout(20_000),
+    headers: { 'User-Agent': 'VOID-master-binary-downloader/1.0', Accept: 'application/vnd.github+json' },
+  });
+  if (!releasesResponse.ok) {
+    throw new Error(`Could not list profile releases from ${repository}: HTTP ${releasesResponse.status}`);
+  }
+  const releases = await releasesResponse.json();
+  const release = releases
+    .filter((candidate) => !candidate.draft && candidate.tag_name.startsWith(releasePrefix))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  if (!release) throw new Error(`No ${releasePrefix.slice(13, -1)} master binaries are published for ${repository}`);
+  url = `https://github.com/${repository}/releases/download/${encodeURIComponent(release.tag_name)}/${encodeURIComponent(asset)}`;
+} else {
+  url = `https://github.com/${repository}/releases/latest/download/${encodeURIComponent(asset)}`;
+}
 const response = await fetch(url, {
   redirect: 'follow',
   signal: AbortSignal.timeout(90_000),

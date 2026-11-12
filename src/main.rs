@@ -12,17 +12,19 @@ use tao::dpi::LogicalSize;
 use tao::platform::macos::WindowBuilderExtMacOS;
 use tao::{
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder},
     window::{Fullscreen, WindowBuilder},
 };
 use wry::{
     http::{header::CONTENT_TYPE, Response, StatusCode},
-    PermissionResponse, WebViewBuilder,
+    WebViewBuilder,
 };
 
+mod native_bridge;
 #[cfg(target_os = "macos")]
 mod native_notifications;
 mod navigation;
+mod permissions;
 mod user_agent;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
@@ -170,21 +172,6 @@ fn notification_host(url: &str) -> Option<String> {
         .flatten()
 }
 
-fn with_native_notification_bridge(
-    builder: WebViewBuilder,
-    allowed_host: Option<String>,
-) -> WebViewBuilder {
-    #[cfg(target_os = "macos")]
-    {
-        native_notifications::install(builder, allowed_host)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = allowed_host;
-        builder
-    }
-}
-
 fn mime_type_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("html") | Some("htm") => "text/html; charset=utf-8",
@@ -244,7 +231,9 @@ pub extern "C" fn init_void_android() {
 fn start_app(config: VoidConfig) -> wry::Result<()> {
     let title = non_empty(config.title).unwrap_or_else(|| "VOID".to_string());
 
-    let event_loop = EventLoop::new();
+    let mut event_loop_builder = EventLoopBuilder::<native_bridge::UserEvent>::with_user_event();
+    let event_loop = event_loop_builder.build();
+    let proxy = event_loop.create_proxy();
     #[allow(unused_mut)]
     let mut window_builder = WindowBuilder::new()
         .with_title(title.clone())
@@ -281,14 +270,15 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
     let _webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
-        with_native_notification_bridge(
+        native_bridge::configure(
             with_browser_navigation(
                 user_agent::apply(WebViewBuilder::new())
                     // Keep camera/microphone requests on the platform's normal
                     // permission path instead of implicitly granting them.
-                    .with_permission_handler(|_| PermissionResponse::Default),
+                    .with_permission_handler(permissions::response),
             ),
             notification_host(&target_url),
+            proxy.clone(),
         )
         .with_url(&target_url)
         .build(&window)?
@@ -298,12 +288,13 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let (base_dir, entry_file) = resolve_local_asset(&asset_target);
         let entry_url = format!("void://localhost/{entry_file}");
 
-        let builder = with_native_notification_bridge(
+        let builder = native_bridge::configure(
             with_browser_navigation(
                 user_agent::apply(WebViewBuilder::new())
-                    .with_permission_handler(|_| PermissionResponse::Default),
+                    .with_permission_handler(permissions::response),
             ),
             notification_host(&entry_url),
+            proxy.clone(),
         );
 
         builder
@@ -344,6 +335,11 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         *control_flow = ControlFlow::Wait;
 
         match event {
+            Event::UserEvent(native_bridge::UserEvent::Ipc { uri, body }) => {
+                if let Some(script) = native_bridge::dispatch(&uri, &body) {
+                    let _ = _webview.evaluate_script(&script);
+                }
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
