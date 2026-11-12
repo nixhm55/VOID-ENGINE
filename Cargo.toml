@@ -67,6 +67,12 @@ name = "android.permission.CAMERA"
 name = "android.permission.RECORD_AUDIO"
 
 [[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_COARSE_LOCATION"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_FINE_LOCATION"
+
+[[package.metadata.android.uses_permission]]
 name = "android.permission.MODIFY_AUDIO_SETTINGS"
 
 [[package.metadata.android.uses_permission]]

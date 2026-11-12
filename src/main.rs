@@ -8,13 +8,13 @@ use std::{
 };
 #[cfg(not(target_os = "android"))]
 use tao::dpi::LogicalSize;
+#[cfg(target_os = "macos")]
+use tao::platform::macos::WindowBuilderExtMacOS;
 use tao::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{Fullscreen, WindowBuilder},
 };
-#[cfg(target_os = "macos")]
-use tao::platform::macos::WindowBuilderExtMacOS;
 use wry::{
     http::{header::CONTENT_TYPE, Response, StatusCode},
     PermissionResponse, WebViewBuilder,
@@ -22,6 +22,7 @@ use wry::{
 
 #[cfg(target_os = "macos")]
 mod native_notifications;
+mod navigation;
 mod user_agent;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
@@ -34,15 +35,7 @@ const VOID_GLYPHS: [[&str; 5]; 4] = [
 ];
 
 fn with_browser_navigation<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
-    #[cfg(not(target_os = "android"))]
-    {
-        builder.with_back_forward_navigation_gestures(true)
-    }
-
-    #[cfg(target_os = "android")]
-    {
-        builder
-    }
+    navigation::apply(builder)
 }
 
 #[derive(Parser, Debug)]

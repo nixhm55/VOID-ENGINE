@@ -22,12 +22,20 @@ import android.os.Build;
 import android.os.Environment;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebView.WebViewTransport;
+import android.os.Message;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 import java.io.FileOutputStream;
 
@@ -49,6 +57,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class VoidActivity extends NativeActivity {
     private static final int MEDIA_PERMISSION_REQUEST = 0x564f;
+    private static final int LOCATION_PERMISSION_REQUEST = 0x564b;
     private static final int STORAGE_PERMISSION_REQUEST = 0x564e;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 0x564d;
     private static final String NOTIFICATION_CHANNEL_ID = "void_web_notifications";
@@ -102,6 +111,9 @@ public final class VoidActivity extends NativeActivity {
     private String[] pendingMediaResources;
     private String[] pendingMediaPermissions;
     private DownloadInfo pendingDownload;
+    private FrameLayout webViewContainer;
+    private boolean locationPermissionRequestInFlight;
+    private final ArrayList<PendingLocationRequest> pendingLocationRequests = new ArrayList<>();
     private WebView notificationWebView;
     private WebView mediaWebView;
     private String notificationOrigin;
@@ -165,7 +177,33 @@ public final class VoidActivity extends NativeActivity {
         webView.addJavascriptInterface(
                 new VoidNotificationBridge(notificationBridgeToken), "VoidNativeNotifications");
         webView.addJavascriptInterface(new VoidMediaBridge(mediaBridgeToken), "VoidNativeMedia");
+        webView.getSettings().setGeolocationEnabled(true);
+        webView.getSettings().setSupportMultipleWindows(true);
+
+        ViewParent parent = webView.getParent();
+        if (parent instanceof ViewGroup) {
+            ViewGroup previousParent = (ViewGroup) parent;
+            previousParent.removeView(webView);
+        }
+        webViewContainer = new FrameLayout(this);
+        webViewContainer.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(webViewContainer);
+
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (!request.isForMainFrame()) {
+                    return false;
+                }
+                return handleNavigation(view, request.getUrl().toString());
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return handleNavigation(view, url);
+            }
+
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
@@ -181,6 +219,17 @@ public final class VoidActivity extends NativeActivity {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onGeolocationPermissionsShowPrompt(
+                    final String origin, final GeolocationPermissions.Callback callback) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        requestLocationPermission(origin, callback);
+                    }
+                });
+            }
+
+            @Override
             public void onPermissionRequest(final PermissionRequest request) {
                 runOnUiThread(new Runnable() {
                     @Override
@@ -195,6 +244,66 @@ public final class VoidActivity extends NativeActivity {
                 if (request == pendingMediaRequest) {
                     clearPendingMediaRequest();
                 }
+            }
+
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog,
+                    boolean isUserGesture, Message resultMsg) {
+                if (!isUserGesture || webViewContainer == null) {
+                    return false;
+                }
+
+                final WebView popup = new WebView(VoidActivity.this);
+                popup.getSettings().setJavaScriptEnabled(true);
+                popup.getSettings().setDomStorageEnabled(true);
+                popup.setVisibility(View.INVISIBLE);
+                popup.setWebViewClient(new WebViewClient() {
+                    private boolean forwarded;
+
+                    private boolean forward(String url) {
+                        if (forwarded || url == null || "about:blank".equals(url)) {
+                            return true;
+                        }
+                        forwarded = true;
+                        boolean consumed = handleNavigation(webView, url);
+                        if (!consumed) {
+                            webView.loadUrl(url);
+                        }
+                        webViewContainer.post(new Runnable() {
+                            @Override public void run() {
+                                webViewContainer.removeView(popup);
+                                popup.destroy();
+                            }
+                        });
+                        return true;
+                    }
+
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView child,
+                            WebResourceRequest request) {
+                        if (!request.isForMainFrame()) {
+                            return false;
+                        }
+                        return forward(request.getUrl().toString());
+                    }
+
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView child, String url) {
+                        return forward(url);
+                    }
+
+                    @Override
+                    public void onPageStarted(WebView child, String url, Bitmap favicon) {
+                        if (!"about:blank".equals(url)) {
+                            forward(url);
+                        }
+                    }
+                });
+                webViewContainer.addView(popup, new FrameLayout.LayoutParams(1, 1));
+                WebViewTransport transport = (WebViewTransport) resultMsg.obj;
+                transport.setWebView(popup);
+                resultMsg.sendToTarget();
+                return true;
             }
         });
 
@@ -246,6 +355,138 @@ public final class VoidActivity extends NativeActivity {
                     NOTIFICATION_SHIM.replace("__VOID_TOKEN__", notificationBridgeToken), null);
             webView.evaluateJavascript(
                     MEDIA_SHIM.replace("__VOID_MEDIA_TOKEN__", mediaBridgeToken), null);
+        }
+    }
+
+    private boolean handleNavigation(WebView webView, String rawUrl) {
+        if (rawUrl == null || rawUrl.isEmpty()) {
+            return true;
+        }
+
+        Uri uri = Uri.parse(rawUrl);
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            return true;
+        }
+        scheme = scheme.toLowerCase(Locale.ROOT);
+
+        if ("http".equals(scheme) || "https".equals(scheme)) {
+            if (isPlayStoreUrl(uri)) {
+                openPlayStore(webView, uri);
+                return true;
+            }
+            return false;
+        }
+
+        if ("about".equals(scheme) || "blob".equals(scheme) || "data".equals(scheme)
+                || "file".equals(scheme) || "javascript".equals(scheme)) {
+            return false;
+        }
+
+        if ("intent".equals(scheme)) {
+            openIntentUrl(webView, rawUrl);
+            return true;
+        }
+
+        if ("void".equals(scheme)) {
+            return false;
+        }
+        openExternalUri(webView, uri);
+        return true;
+    }
+
+    private static boolean isPlayStoreUrl(Uri uri) {
+        String host = uri.getHost();
+        return "play.google.com".equalsIgnoreCase(host)
+                && uri.getPath() != null && uri.getPath().startsWith("/store");
+    }
+
+    private void openPlayStore(WebView webView, Uri uri) {
+        Intent storeIntent = new Intent(Intent.ACTION_VIEW, uri);
+        storeIntent.setPackage("com.android.vending");
+        try {
+            startActivity(storeIntent);
+        } catch (RuntimeException unavailable) {
+            openExternalUri(webView, uri);
+        }
+    }
+
+    private void openExternalUri(WebView webView, Uri uri) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+        } catch (RuntimeException unavailable) {
+            String scheme = uri.getScheme();
+            if (webView != null && ("http".equalsIgnoreCase(scheme)
+                    || "https".equalsIgnoreCase(scheme))) {
+                webView.loadUrl(uri.toString());
+            } else {
+                Toast.makeText(this, "No app can open this link", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void openIntentUrl(WebView webView, String rawUrl) {
+        try {
+            Intent intent = Intent.parseUri(rawUrl, Intent.URI_INTENT_SCHEME);
+            intent.setComponent(null);
+            intent.setSelector(null);
+            intent.addCategory(Intent.CATEGORY_BROWSABLE);
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                startActivity(intent);
+                return;
+            }
+
+            String fallback = intent.getStringExtra("browser_fallback_url");
+            if (fallback != null) {
+                Uri fallbackUri = Uri.parse(fallback);
+                String fallbackScheme = fallbackUri.getScheme();
+                if ("http".equalsIgnoreCase(fallbackScheme)
+                        || "https".equalsIgnoreCase(fallbackScheme)) {
+                    webView.loadUrl(fallback);
+                    return;
+                }
+            }
+            Toast.makeText(this, "No app can open this link", Toast.LENGTH_LONG).show();
+        } catch (Exception error) {
+            Toast.makeText(this, "Could not open this link", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void requestLocationPermission(
+            String origin, GeolocationPermissions.Callback callback) {
+        if (origin == null || !origin.toLowerCase(Locale.ROOT).startsWith("https://")) {
+            callback.invoke(origin, false, true);
+            return;
+        }
+        if (hasLocationPermission()) {
+            callback.invoke(origin, true, true);
+            return;
+        }
+
+        pendingLocationRequests.add(new PendingLocationRequest(origin, callback));
+        if (!locationPermissionRequestInFlight) {
+            locationPermissionRequestInFlight = true;
+            requestPermissions(new String[]{
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+            }, LOCATION_PERMISSION_REQUEST);
+        }
+    }
+
+    private boolean hasLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void finishLocationPermissionRequest(boolean granted) {
+        locationPermissionRequestInFlight = false;
+        ArrayList<PendingLocationRequest> requests = new ArrayList<>(pendingLocationRequests);
+        pendingLocationRequests.clear();
+        for (PendingLocationRequest request : requests) {
+            request.callback.invoke(request.origin, granted, true);
         }
     }
 
@@ -585,6 +826,7 @@ public final class VoidActivity extends NativeActivity {
 
     @Override
     protected void onDestroy() {
+        finishLocationPermissionRequest(false);
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();
@@ -749,7 +991,9 @@ public final class VoidActivity extends NativeActivity {
             int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
-        if (requestCode == MEDIA_PERMISSION_REQUEST) {
+        if (requestCode == LOCATION_PERMISSION_REQUEST) {
+            finishLocationPermissionRequest(hasLocationPermission());
+        } else if (requestCode == MEDIA_PERMISSION_REQUEST) {
             PermissionRequest request = pendingMediaRequest;
             String[] resources = pendingMediaResources;
             String[] requiredPermissions = pendingMediaPermissions;
@@ -814,6 +1058,16 @@ public final class VoidActivity extends NativeActivity {
             this.contentDisposition = contentDisposition;
             this.mimeType = mimeType;
             this.referer = referer;
+        }
+    }
+
+    private static final class PendingLocationRequest {
+        final String origin;
+        final GeolocationPermissions.Callback callback;
+
+        PendingLocationRequest(String origin, GeolocationPermissions.Callback callback) {
+            this.origin = origin;
+            this.callback = callback;
         }
     }
 }

@@ -16,6 +16,7 @@ use wry::{
     PermissionResponse, WebViewBuilder,
 };
 
+mod navigation;
 mod user_agent;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
@@ -206,21 +207,20 @@ unsafe fn setup_native_activity_webview(
     let target_obj = env.new_string(&target)?;
     let target_obj = JObject::from(target_obj);
 
-    // The custom Activity installs WebChromeClient runtime permission handling
-    // a DownloadManager-backed DownloadListener, and a native notification
-    // bridge on this WebView.
-    env.call_method(
-        activity_obj,
-        "configureVoidWebView",
-        "(Landroid/webkit/WebView;Ljava/lang/String;)V",
-        &[JValue::Object(&webview), JValue::Object(&target_obj)],
-    )?;
-
     env.call_method(
         activity_obj,
         "setContentView",
         "(Landroid/view/View;)V",
         &[JValue::Object(&webview)],
+    )?;
+
+    // The custom Activity installs navigation, location/media permission,
+    // download, and native notification handling for this WebView.
+    env.call_method(
+        activity_obj,
+        "configureVoidWebView",
+        "(Landroid/webkit/WebView;Ljava/lang/String;)V",
+        &[JValue::Object(&webview), JValue::Object(&target_obj)],
     )?;
 
     if is_remote_url(&target) {
@@ -319,7 +319,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         .unwrap_or_else(|| "dist/index.html".to_string());
 
     let _webview = if is_remote_url(&target) {
-        user_agent::apply(WebViewBuilder::new())
+        navigation::apply(user_agent::apply(WebViewBuilder::new()))
             // Keep camera/microphone requests on the platform's normal
             // permission path instead of implicitly granting them.
             .with_permission_handler(|_| PermissionResponse::Default)
@@ -329,7 +329,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         let (base_dir, entry_file) = resolve_local_asset(&target);
         let entry_url = format!("void://localhost/{entry_file}");
 
-        user_agent::apply(WebViewBuilder::new())
+        navigation::apply(user_agent::apply(WebViewBuilder::new()))
             .with_permission_handler(|_| PermissionResponse::Default)
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');
