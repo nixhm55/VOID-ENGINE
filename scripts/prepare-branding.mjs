@@ -167,7 +167,17 @@ function parseIconLinks(html, pageUrl) {
     try {
       const url = new URL(attrs.href, pageUrl);
       if (url.protocol === 'https:' || url.protocol === 'http:') {
-        links.push({ url: url.href, score: /apple-touch-icon/i.test(rel) ? 0 : 1, png: /png/i.test(attrs.type || '') || /\.png(?:$|\?)/i.test(url.href) ? 0 : 1 });
+        const sizes = (attrs.sizes || '').match(/\d+\s*x\s*\d+/gi) || [];
+        const area = sizes.reduce((largest, size) => {
+          const [width, height] = size.toLowerCase().split('x').map(Number);
+          return Math.max(largest, width * height);
+        }, 0);
+        links.push({
+          url: url.href,
+          score: /apple-touch-icon/i.test(rel) ? 0 : 1,
+          area,
+          png: /png/i.test(attrs.type || '') || /\.png(?:$|\?)/i.test(url.href) ? 0 : 1,
+        });
       }
     } catch {}
   }
@@ -177,10 +187,62 @@ function parseIconLinks(html, pageUrl) {
     if (!/^og:image$/i.test(attrs.property || '') || !attrs.content) continue;
     try {
       const url = new URL(attrs.content, pageUrl);
-      if (url.protocol === 'https:' || url.protocol === 'http:') links.push({ url: url.href, score: 2, png: /\.png(?:$|\?)/i.test(url.href) ? 0 : 1 });
+      if (url.protocol === 'https:' || url.protocol === 'http:') links.push({ url: url.href, score: 2, area: 0, png: /\.png(?:$|\?)/i.test(url.href) ? 0 : 1 });
     } catch {}
   }
-  return links.sort((a, b) => a.score - b.score || a.png - b.png).map((item) => item.url);
+  return links.sort((a, b) => a.score - b.score || b.area - a.area || a.png - b.png).map((item) => item.url);
+}
+
+function parseManifestHref(html, pageUrl) {
+  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+    const attrs = {};
+    for (const attr of match[0].matchAll(/([\w:-]+)\s*=\s*(["'])(.*?)\2/gi)) attrs[attr[1].toLowerCase()] = attr[3];
+    if (!/(^|\s)manifest(\s|$)/i.test(attrs.rel || '') || !attrs.href) continue;
+    try {
+      const url = new URL(attrs.href, pageUrl);
+      if (url.protocol === 'https:' || url.protocol === 'http:') return url.href;
+    } catch {}
+  }
+  return null;
+}
+
+async function fetchManifestIcons(manifestUrl) {
+  if (!manifestUrl) return [];
+  try {
+    const response = await fetch(manifestUrl, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/manifest+json,application/json;q=0.9,*/*;q=0.2' },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const declaredLength = Number(response.headers.get('content-length') || 0);
+    if (declaredLength > maxIconBytes) throw new Error('Manifest exceeds the 256 KiB size limit');
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxIconBytes) throw new Error('Manifest exceeds the 256 KiB size limit');
+    const manifest = JSON.parse(text);
+    const icons = (Array.isArray(manifest.icons) ? manifest.icons : []).flatMap((icon) => {
+      if (!icon || typeof icon.src !== 'string') return [];
+      const type = typeof icon.type === 'string' ? icon.type.toLowerCase() : '';
+      if (type && !/^image\/(png|x-icon|vnd\.microsoft\.icon)$/.test(type)) return [];
+      if (!type && !/\.(png|ico)(?:$|\?)/i.test(icon.src)) return [];
+      try {
+        const url = new URL(icon.src, response.url || manifestUrl);
+        if (url.protocol !== 'https:' && url.protocol !== 'http:') return [];
+        const sizes = typeof icon.sizes === 'string' ? icon.sizes.match(/\d+\s*x\s*\d+/gi) || [] : [];
+        const area = sizes.reduce((largest, size) => {
+          const [width, height] = size.toLowerCase().split('x').map(Number);
+          return Math.max(largest, width * height);
+        }, 0);
+        return [{ url: url.href, area }];
+      } catch {
+        return [];
+      }
+    });
+    return icons.sort((a, b) => b.area - a.area).map((icon) => icon.url);
+  } catch (error) {
+    console.warn(`Could not inspect the app manifest for an icon: ${error.message}`);
+    return [];
+  }
 }
 
 async function discoverIcon() {
@@ -192,7 +254,13 @@ async function discoverIcon() {
     try {
       const pageUrl = new URL(site.includes('://') ? site : `https://${site}`).href;
       const response = await fetch(pageUrl, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Mozilla/5.0' } });
-      if (response.ok) candidates.push(...parseIconLinks((await response.text()).slice(0, 2 * 1024 * 1024), response.url || pageUrl));
+      if (response.ok) {
+        const html = (await response.text()).slice(0, 2 * 1024 * 1024);
+        const resolvedPageUrl = response.url || pageUrl;
+        const manifestUrl = parseManifestHref(html, resolvedPageUrl);
+        candidates.push(...await fetchManifestIcons(manifestUrl));
+        candidates.push(...parseIconLinks(html, resolvedPageUrl));
+      }
       const origin = new URL(pageUrl).origin;
       candidates.push(`${origin}/apple-touch-icon.png`, `${origin}/favicon.png`, `${origin}/favicon.ico`);
     } catch (error) {

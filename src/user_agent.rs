@@ -1,7 +1,10 @@
 use wry::WebViewBuilder;
 
-// Keep the browser version centralized so it is easy to refresh as Chrome
-// releases new stable versions. macOS deliberately keeps WKWebView's native UA.
+// Keep these platform identities aligned with current browsers. The macOS
+// string matches Pake's Safari-compatible WKWebView identity.
+#[cfg(target_os = "macos")]
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
 #[cfg(target_os = "windows")]
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36";
 
@@ -20,21 +23,10 @@ const USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 
 const USER_AGENT: &str =
     "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36";
 
-#[cfg(not(target_os = "macos"))]
 pub(crate) const fn current() -> &'static str {
     USER_AGENT
 }
 
 pub(crate) fn apply<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
-    #[cfg(target_os = "macos")]
-    {
-        // WKWebView should identify itself naturally. A Chrome User-Agent on
-        // WebKit can make sign-in providers reject the embedded browser.
-        builder
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        builder.with_user_agent(current())
-    }
+    builder.with_user_agent(current())
 }

@@ -22,6 +22,7 @@ New-Item -ItemType Directory -Force $inputDir, (Join-Path $PWD 'output') | Out-N
 Copy-Item -Force $env:MASTER_BINARY_PATH $binaryPath
 Copy-Item -Force 'void.json' $configPath
 Copy-Item -Force 'branding/app.ico' $iconPath
+& (Join-Path $PSScriptRoot 'set-windows-icon.ps1') -Executable $binaryPath -IconFile $iconPath
 
 $wixBin = if (Get-Command candle.exe -ErrorAction SilentlyContinue) {
   Split-Path (Get-Command candle.exe).Source
