@@ -110,8 +110,6 @@ jobs:
         with:
           key: master-android-arm64-${{ steps.rust.outputs.cachekey }}
           cache-targets: true
-      - name: Prepare generic launcher resources
-        run: node scripts/prepare-branding.mjs
       - name: Ensure Android SDK and debug signing key
         run: |
           set -euo pipefail
