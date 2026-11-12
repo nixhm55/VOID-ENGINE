@@ -5,9 +5,11 @@ binary="${1:?usage: package-linux-deb.sh MASTER_BINARY OUTPUT.deb}"
 output="${2:?usage: package-linux-deb.sh MASTER_BINARY OUTPUT.deb}"
 app_name="${APP_NAME:-VOID}"
 app_slug="${APP_SLUG:-void}"
+deb_package="${app_slug//_/-}"
 version="${APP_VERSION:-1.0.0}"
 [[ -f "$binary" && -f void.json && -f branding/icon.png ]] || { echo "A master binary, void.json, and icon are required" >&2; exit 1; }
-[[ "$app_slug" =~ ^[a-z0-9][a-z0-9_+-]*$ ]] || { echo "Invalid Debian package name: $app_slug" >&2; exit 1; }
+[[ "$app_slug" =~ ^[a-z0-9][a-z0-9_+-]*$ ]] || { echo "Invalid app slug: $app_slug" >&2; exit 1; }
+[[ "$deb_package" =~ ^[a-z0-9][a-z0-9+.-]*$ ]] || { echo "Invalid Debian package name: $deb_package" >&2; exit 1; }
 [[ "$version" =~ ^[0-9A-Za-z.+:~-]+$ ]] || { echo "Invalid Debian package version: $version" >&2; exit 1; }
 command -v dpkg-deb >/dev/null || { echo "dpkg-deb is required" >&2; exit 1; }
 
@@ -28,7 +30,7 @@ Categories=Utility;Network;
 Terminal=false
 EOF
 cat > "$stage/DEBIAN/control" <<EOF
-Package: $app_slug
+Package: $deb_package
 Version: $version
 Section: web
 Priority: optional
