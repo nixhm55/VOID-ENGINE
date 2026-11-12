@@ -14,6 +14,12 @@ The platform builds run in parallel. Total time depends on GitHub runner availab
 
 <br />
 
+<h2 align="center">Engine profiles</h2>
+
+Choose one profile in the **Build VOID** workflow. **Void Engine Lite** keeps the existing small wrapper and omits native geolocation and Bluetooth. **Void Engine Max** enables geolocation and a native Bluetooth Low Energy bridge.
+
+In Max, secure HTTPS sites can use `navigator.bluetooth` to request a nearby BLE device, connect to its GATT services, read and write characteristics, and receive notifications. VOID asks for origin access with a native three-choice prompt, then shows a native device picker. Bluetooth is limited to BLE; classic Bluetooth and Web Bluetooth APIs outside this supported subset are not exposed. Android uses the platform BLE APIs; macOS, Windows, and Linux use the system BLE stack through the native engine.
+
 <h2 align="center">Build with GitHub Actions</h2>
 
 This is the quickest way to build from your own fork. It does not require installing the VOID command-line client or configuring its token.

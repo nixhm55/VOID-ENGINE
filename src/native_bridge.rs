@@ -2,15 +2,36 @@ use serde::Deserialize;
 use tao::event_loop::EventLoopProxy;
 use wry::{http::Request, WebViewBuilder};
 
+#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+mod desktop_bluetooth;
+
 #[derive(Debug)]
 pub(crate) enum UserEvent {
-    Ipc { uri: String, body: String },
+    Ipc {
+        uri: String,
+        body: String,
+    },
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    Script {
+        origin: String,
+        source: String,
+    },
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    Prompt {
+        title: String,
+        description: String,
+        buttons: [String; 3],
+        response: std::sync::mpsc::Sender<String>,
+    },
 }
 
 #[derive(Deserialize)]
 struct IpcCall {
     id: String,
     method: String,
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    #[serde(default)]
+    args: serde_json::Value,
 }
 
 #[cfg(all(target_os = "macos", feature = "geolocation"))]
@@ -81,6 +102,10 @@ pub(crate) fn configure(
     let builder = builder.with_initialization_script(GEOLOCATION_SHIM);
     #[cfg(not(all(target_os = "macos", feature = "geolocation")))]
     let builder = builder;
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    let builder = builder.with_initialization_script(include_str!("android/bluetooth-shim.js"));
+    #[cfg(not(all(feature = "bluetooth", not(target_os = "android"))))]
+    let builder = builder;
 
     builder.with_ipc_handler(move |request: Request<String>| {
         #[cfg(target_os = "macos")]
@@ -96,24 +121,52 @@ pub(crate) fn configure(
     })
 }
 
-pub(crate) fn dispatch(uri: &str, body: &str) -> Option<String> {
+pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>) -> Option<String> {
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    {
+        let call = serde_json::from_str::<IpcCall>(body).ok()?;
+        let origin = secure_origin(uri);
+
+        if call.method.starts_with("bluetooth.") {
+            let Some(origin) = origin else {
+                return Some(reply_script(
+                    "__voidBluetoothReply",
+                    &call.id,
+                    Err((
+                        "Bluetooth is available only to secure website origins.".into(),
+                        "SecurityError",
+                    )),
+                ));
+            };
+            let id = call.id;
+            let method = call.method;
+            std::thread::Builder::new()
+                .name("void-bluetooth-ipc".into())
+                .spawn(move || {
+                    let result =
+                        desktop_bluetooth::handle(&origin, &method, &call.args, _proxy.clone());
+                    let script = reply_script("__voidBluetoothReply", &id, result);
+                    let _ = _proxy.send_event(UserEvent::Script {
+                        origin,
+                        source: script,
+                    });
+                })
+                .ok()?;
+            return None;
+        }
+    }
+
     process_call(uri, body)
 }
 
 fn process_call(uri: &str, body: &str) -> Option<String> {
     let call = serde_json::from_str::<IpcCall>(body).ok()?;
     let parsed_uri = uri.parse::<wry::http::Uri>().ok();
-    let secure_origin =
-        parsed_uri
-            .as_ref()
-            .is_some_and(|parsed| match (parsed.scheme_str(), parsed.host()) {
-                (Some("https"), Some(_)) => true,
-                (Some("http"), Some("localhost" | "127.0.0.1" | "[::1]")) => true,
-                (Some("void"), Some("localhost")) => true,
-                _ => false,
-            });
+    let secure_origin = parsed_uri
+        .as_ref()
+        .is_some_and(|parsed| secure_origin_from_uri(parsed).is_some());
     let result: Result<serde_json::Value, String> = if !secure_origin {
-        Err("Location is available only to secure website origins.".to_string())
+        Err("Native features are available only to secure website origins.".to_string())
     } else {
         match call.method.as_str() {
             #[cfg(all(target_os = "macos", feature = "geolocation"))]
@@ -144,6 +197,53 @@ fn process_call(uri: &str, body: &str) -> Option<String> {
     Some(format!(
         "if (typeof window.__voidNativeReply === 'function') window.__voidNativeReply({encoded});"
     ))
+}
+
+#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+pub(crate) fn secure_origin(uri: &str) -> Option<String> {
+    uri.parse::<wry::http::Uri>()
+        .ok()
+        .and_then(|parsed| secure_origin_from_uri(&parsed))
+}
+
+fn secure_origin_from_uri(uri: &wry::http::Uri) -> Option<String> {
+    let scheme = uri.scheme_str()?;
+    let host = uri.host()?;
+    let allowed = match (scheme, host) {
+        ("https", _) => true,
+        ("http", "localhost" | "127.0.0.1" | "[::1]") => true,
+        ("void", "localhost") => true,
+        _ => false,
+    };
+    if !allowed {
+        return None;
+    }
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let port = uri
+        .port_u16()
+        .filter(|port| *port != default_port)
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!(
+        "{}://{}{}",
+        scheme.to_ascii_lowercase(),
+        host.to_ascii_lowercase(),
+        port
+    ))
+}
+
+#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+fn reply_script(
+    callback: &str,
+    id: &str,
+    result: Result<serde_json::Value, (String, &'static str)>,
+) -> String {
+    let message = match result {
+        Ok(value) => serde_json::json!({ "id": id, "value": value }),
+        Err((error, name)) => serde_json::json!({ "id": id, "error": error, "name": name }),
+    };
+    let encoded = serde_json::to_string(&message).unwrap_or_else(|_| "{}".to_string());
+    format!("if (typeof window.{callback} === 'function') window.{callback}({encoded});")
 }
 
 #[cfg(all(target_os = "macos", feature = "geolocation"))]

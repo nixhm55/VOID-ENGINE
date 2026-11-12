@@ -207,6 +207,13 @@ unsafe fn setup_native_activity_webview(
         .unwrap_or_else(|| "dist/index.html".to_string());
     let target_obj = env.new_string(&target)?;
     let target_obj = JObject::from(target_obj);
+    let bluetooth_shim = if cfg!(feature = "bluetooth") {
+        include_str!("android/bluetooth-shim.js")
+    } else {
+        ""
+    };
+    let bluetooth_shim = env.new_string(bluetooth_shim)?;
+    let bluetooth_shim_obj = JObject::from(bluetooth_shim);
 
     env.call_method(
         activity_obj,
@@ -220,11 +227,13 @@ unsafe fn setup_native_activity_webview(
     env.call_method(
         activity_obj,
         "configureVoidWebView",
-        "(Landroid/webkit/WebView;Ljava/lang/String;Z)V",
+        "(Landroid/webkit/WebView;Ljava/lang/String;ZZLjava/lang/String;)V",
         &[
             JValue::Object(&webview),
             JValue::Object(&target_obj),
             JValue::Bool(cfg!(feature = "geolocation") as u8),
+            JValue::Bool(cfg!(feature = "bluetooth") as u8),
+            JValue::Object(&bluetooth_shim_obj),
         ],
     )?;
 

@@ -13,6 +13,8 @@ fi
 android_jar="${sdk_root}/platforms/android-33/android.jar"
 tools_dir="${sdk_root}/build-tools/${build_tools}"
 java_source="src/android/java/com/mdnm/voidengine/VoidActivity.java"
+bluetooth_source="src/android/java/com/mdnm/voidengine/VoidBluetoothBridge.java"
+engine_profile="${ENGINE_PROFILE:-${APP_PROFILE:-lite}}"
 keystore="${CARGO_APK_RELEASE_KEYSTORE:-${HOME}/.android/debug.keystore}"
 keystore_password="${CARGO_APK_RELEASE_KEYSTORE_PASSWORD:-android}"
 
@@ -23,13 +25,25 @@ for required in "${apk_path}" "${android_jar}" "${tools_dir}/d8" \
     exit 1
   fi
 done
+if [[ "$engine_profile" != "lite" && "$engine_profile" != "max" ]]; then
+  echo "ENGINE_PROFILE or APP_PROFILE must be lite or max" >&2
+  exit 1
+fi
+if [[ "$engine_profile" == "max" && ! -f "$bluetooth_source" ]]; then
+  echo "The Max profile requires the Android Bluetooth bridge source: $bluetooth_source" >&2
+  exit 1
+fi
 
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "${temp_dir}"' EXIT
 mkdir -p "${temp_dir}/classes" "${temp_dir}/dex"
 
+java_sources=("${java_source}")
+if [[ "$engine_profile" == "max" ]]; then
+  java_sources+=("${bluetooth_source}")
+fi
 javac -source 8 -target 8 -bootclasspath "${android_jar}" \
-  -d "${temp_dir}/classes" "${java_source}"
+  -d "${temp_dir}/classes" "${java_sources[@]}"
 jar cf "${temp_dir}/bridge.jar" -C "${temp_dir}/classes" .
 "${tools_dir}/d8" --lib "${android_jar}" --min-api 24 \
   --output "${temp_dir}/dex" "${temp_dir}/bridge.jar"

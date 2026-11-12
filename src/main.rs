@@ -1,4 +1,6 @@
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -336,9 +338,45 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
         match event {
             Event::UserEvent(native_bridge::UserEvent::Ipc { uri, body }) => {
-                if let Some(script) = native_bridge::dispatch(&uri, &body) {
+                if let Some(script) = native_bridge::dispatch(&uri, &body, proxy.clone()) {
                     let _ = _webview.evaluate_script(&script);
                 }
+            }
+            #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+            Event::UserEvent(native_bridge::UserEvent::Script { origin, source }) => {
+                let current_origin = _webview
+                    .url()
+                    .ok()
+                    .and_then(|url| native_bridge::secure_origin(&url));
+                if current_origin.as_deref() == Some(origin.as_str()) {
+                    let _ = _webview.evaluate_script(&source);
+                }
+            }
+            #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+            Event::UserEvent(native_bridge::UserEvent::Prompt {
+                title,
+                description,
+                buttons,
+                response,
+            }) => {
+                let result = MessageDialog::new()
+                    .set_level(MessageLevel::Warning)
+                    .set_title(title)
+                    .set_description(description)
+                    .set_buttons(MessageButtons::YesNoCancelCustom(
+                        buttons[0].clone(),
+                        buttons[1].clone(),
+                        buttons[2].clone(),
+                    ))
+                    .show();
+                let selected = match result {
+                    MessageDialogResult::Custom(label) => label,
+                    MessageDialogResult::Yes => buttons[0].clone(),
+                    MessageDialogResult::No => buttons[1].clone(),
+                    MessageDialogResult::Ok => buttons[0].clone(),
+                    _ => String::new(),
+                };
+                let _ = response.send(selected);
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,

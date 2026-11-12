@@ -89,6 +89,8 @@ if profile == "max":
         node.set("{%s}name" % android, name)
         if max_sdk:
             node.set("{%s}maxSdkVersion" % android, max_sdk)
+        if name == "android.permission.BLUETOOTH_SCAN":
+            node.set("{%s}usesPermissionFlags" % android, "neverForLocation")
         root.insert(0, node)
 tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 PY

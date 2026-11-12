@@ -60,6 +60,7 @@ public final class VoidActivity extends NativeActivity {
     private static final int LOCATION_PERMISSION_REQUEST = 0x564b;
     private static final int STORAGE_PERMISSION_REQUEST = 0x564e;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 0x564d;
+    private static final int BLUETOOTH_PERMISSION_REQUEST = 0x5648;
     private static final String NOTIFICATION_CHANNEL_ID = "void_web_notifications";
     private static final String MEDIA_CHANNEL_ID = "void_media_playback";
     private static final int MEDIA_NOTIFICATION_ID = 0x564c;
@@ -168,10 +169,20 @@ public final class VoidActivity extends NativeActivity {
     private final ArrayList<Integer> pendingNotificationRequests = new ArrayList<>();
     private final AtomicInteger nextNotificationId = new AtomicInteger(1);
     private boolean geolocationEnabled;
+    private boolean bluetoothEnabled;
+    private String bluetoothShim;
+    private BluetoothPermissionReceiver bluetoothBridge;
+
+    interface BluetoothPermissionReceiver {
+        void onRuntimePermissionResult(int[] grantResults);
+        void closeBridge();
+    }
 
     public void configureVoidWebView(final WebView webView, String allowedUrl,
-            boolean geolocationEnabled) {
+            boolean geolocationEnabled, boolean bluetoothEnabled, String bluetoothShim) {
         this.geolocationEnabled = geolocationEnabled;
+        this.bluetoothEnabled = bluetoothEnabled;
+        this.bluetoothShim = bluetoothShim;
         notificationWebView = webView;
         mediaWebView = webView;
         notificationOrigin = secureOrigin(allowedUrl);
@@ -180,6 +191,22 @@ public final class VoidActivity extends NativeActivity {
         webView.addJavascriptInterface(
                 new VoidNotificationBridge(notificationBridgeToken), "VoidNativeNotifications");
         webView.addJavascriptInterface(new VoidMediaBridge(mediaBridgeToken), "VoidNativeMedia");
+        if (bluetoothEnabled) {
+            try {
+                Class<?> bridgeClass = Class.forName("com.mdnm.voidengine.VoidBluetoothBridge");
+                java.lang.reflect.Constructor<?> constructor = bridgeClass.getDeclaredConstructor(
+                        VoidActivity.class, WebView.class);
+                constructor.setAccessible(true);
+                Object instance = constructor.newInstance(this, webView);
+                if (!(instance instanceof BluetoothPermissionReceiver)) {
+                    throw new IllegalStateException("Bluetooth bridge has an incompatible permission callback.");
+                }
+                bluetoothBridge = (BluetoothPermissionReceiver) instance;
+                webView.addJavascriptInterface(instance, "VoidNativeBluetooth");
+            } catch (ReflectiveOperationException error) {
+                throw new IllegalStateException("Bluetooth bridge is missing from this Max APK.", error);
+            }
+        }
         webView.getSettings().setGeolocationEnabled(geolocationEnabled);
         webView.getSettings().setSupportMultipleWindows(true);
 
@@ -211,12 +238,14 @@ public final class VoidActivity extends NativeActivity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 injectNotificationShim(view, url);
+                injectBluetoothShim(view, url);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 injectNotificationShim(view, url);
+                injectBluetoothShim(view, url);
             }
         });
 
@@ -359,6 +388,17 @@ public final class VoidActivity extends NativeActivity {
             webView.evaluateJavascript(
                     MEDIA_SHIM.replace("__VOID_MEDIA_TOKEN__", mediaBridgeToken), null);
         }
+    }
+
+    private void injectBluetoothShim(WebView webView, String url) {
+        if (!bluetoothEnabled || bluetoothShim == null || bluetoothShim.isEmpty()) return;
+        String scheme = Uri.parse(url).getScheme();
+        if (!"https".equalsIgnoreCase(scheme) && !url.startsWith("void://localhost/")) return;
+        webView.evaluateJavascript(bluetoothShim, null);
+    }
+
+    void requestBluetoothPermissions(String[] permissions) {
+        requestPermissions(permissions, BLUETOOTH_PERMISSION_REQUEST);
     }
 
     private boolean handleNavigation(WebView webView, String rawUrl) {
@@ -834,6 +874,10 @@ public final class VoidActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         finishLocationPermissionRequest(false);
+        if (bluetoothBridge != null) {
+            bluetoothBridge.closeBridge();
+            bluetoothBridge = null;
+        }
         if (mediaSession != null) {
             mediaSession.setActive(false);
             mediaSession.release();
@@ -1042,6 +1086,8 @@ public final class VoidActivity extends NativeActivity {
             for (Integer requestId : requestIds) {
                 resolveNotificationPermission(requestId, granted);
             }
+        } else if (requestCode == BLUETOOTH_PERMISSION_REQUEST && bluetoothBridge != null) {
+            bluetoothBridge.onRuntimePermissionResult(grantResults);
         }
     }
 

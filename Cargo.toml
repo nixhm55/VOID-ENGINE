@@ -11,7 +11,7 @@ build = false
 default = ["lite"]
 lite = []
 geolocation = []
-bluetooth = ["dep:btleplug", "dep:tokio"]
+bluetooth = ["dep:btleplug", "dep:tokio", "dep:futures-util", "dep:rfd", "dep:uuid"]
 max = ["geolocation", "bluetooth"]
 
 [package.metadata.bundle]
@@ -56,6 +56,17 @@ ndk-context = "0.1"
 [target.'cfg(not(target_os = "android"))'.dependencies]
 btleplug = { version = "0.13.5", optional = true }
 tokio = { version = "1.53", features = ["rt-multi-thread", "time"], optional = true }
+futures-util = { version = "0.3", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rfd = { version = "0.17.2", default-features = false, optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rfd = { version = "0.17.2", default-features = false, features = ["common-controls-v6"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3"], optional = true }
 
 [package.metadata.android]
 package = "com.void.void"
