@@ -319,8 +319,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         .unwrap_or_else(|| "dist/index.html".to_string());
 
     let _webview = if is_remote_url(&target) {
-        WebViewBuilder::new()
-            .with_user_agent(user_agent::current())
+        user_agent::apply(WebViewBuilder::new())
             // Keep camera/microphone requests on the platform's normal
             // permission path instead of implicitly granting them.
             .with_permission_handler(|_| PermissionResponse::Default)
@@ -330,8 +329,7 @@ pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
         let (base_dir, entry_file) = resolve_local_asset(&target);
         let entry_url = format!("void://localhost/{entry_file}");
 
-        WebViewBuilder::new()
-            .with_user_agent(user_agent::current())
+        user_agent::apply(WebViewBuilder::new())
             .with_permission_handler(|_| PermissionResponse::Default)
             .with_custom_protocol("void".into(), move |_webview_id, request| {
                 let raw_path = request.uri().path().trim_start_matches('/');

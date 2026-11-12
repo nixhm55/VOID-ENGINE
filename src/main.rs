@@ -393,8 +393,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let target_url = normalize_url(&url);
         with_native_notification_bridge(
             with_window_controls(
-                WebViewBuilder::new()
-                    .with_user_agent(user_agent::current())
+                user_agent::apply(WebViewBuilder::new())
                     // Keep camera/microphone requests on the platform's normal
                     // permission path instead of implicitly granting them.
                     .with_permission_handler(|_| PermissionResponse::Default),
@@ -412,8 +411,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
         let builder = with_native_notification_bridge(
             with_window_controls(
-                WebViewBuilder::new()
-                    .with_user_agent(user_agent::current())
+                user_agent::apply(WebViewBuilder::new())
                     .with_permission_handler(|_| PermissionResponse::Default),
                 event_loop.create_proxy(),
             ),
