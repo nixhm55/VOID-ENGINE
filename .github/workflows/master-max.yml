@@ -1,30 +1,19 @@
-name: Publish VOID master binaries
+name: Publish VOID master Max binaries
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      engine_profile:
-        description: >-
-          Build one profile only. Lite keeps the existing small build and disables GPS/Bluetooth.
-          Max adds geolocation and the native BLE bridge.
-        type: choice
-        required: true
-        options:
-          - Void Engine Lite
-          - Void Engine Max
-        default: Void Engine Lite
 
 permissions:
   contents: read
 
 env:
-  ENGINE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile == 'Void Engine Max' && 'max' || 'lite' }}
+  ENGINE_PROFILE: max
 
 jobs:
   master-macos:
-    name: Build macOS ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master binary
+    name: Build macOS Max master binary
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -52,7 +41,7 @@ jobs:
           if-no-files-found: error
 
   master-windows:
-    name: Build Windows ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master binary
+    name: Build Windows Max master binary
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
@@ -76,7 +65,7 @@ jobs:
           if-no-files-found: error
 
   master-linux:
-    name: Build Linux ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master binary
+    name: Build Linux Max master binary
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -103,7 +92,7 @@ jobs:
           if-no-files-found: error
 
   master-android:
-    name: Build Android ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} master APK
+    name: Build Android Max master APK
     runs-on: ubuntu-24.04
     env:
       WRY_ANDROID_PACKAGE: com.void.void
@@ -161,7 +150,7 @@ jobs:
           if-no-files-found: error
 
   publish-master-release:
-    name: Publish reusable ${{ github.event_name == 'workflow_dispatch' && inputs.engine_profile || 'Lite' }} platform binaries
+    name: Publish reusable Max platform binaries
     runs-on: ubuntu-24.04
     needs: [master-macos, master-windows, master-linux, master-android]
     permissions:
