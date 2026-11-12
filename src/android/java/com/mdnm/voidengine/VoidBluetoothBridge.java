@@ -173,14 +173,29 @@ final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionRecei
             throw new BridgeException("Android Bluetooth permissions were denied.", "NotAllowedError");
         }
         BluetoothAdapter adapter = adapter();
+        if (adapter == null) {
+            throw new BridgeException("This device has no Bluetooth adapter.", "NotFoundError");
+        }
+        if (!adapter.isEnabled()) {
+            if (!activity.requestBluetoothEnable()) {
+                throw new BridgeException("Bluetooth was not turned on.", "NotAllowedError");
+            }
+            adapter = adapter();
+        }
         if (adapter == null || !adapter.isEnabled()) {
-            throw new BridgeException("Turn on Bluetooth in Android settings and try again.", "NotFoundError");
+            throw new BridgeException("Bluetooth is still turned off.", "NotAllowedError");
+        }
+        if (Build.VERSION.SDK_INT < 31 && !activity.ensureLocationServicesForBluetooth()) {
+            throw new BridgeException(
+                    "Android 11 and earlier require device Location to be on for Bluetooth scanning. Turn on Location and try again.",
+                    "NotAllowedError");
         }
         BluetoothLeScanner scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) throw new BridgeException("This device has no Bluetooth LE scanner.", "NotFoundError");
 
         final CountDownLatch scanFinished = new CountDownLatch(1);
         final Map<String, BluetoothDevice> scanResults = new HashMap<>();
+        final int[] scanError = new int[]{-1};
         synchronized (scanServiceUuids) {
             scanServiceUuids.clear();
             scanRecords.clear();
@@ -192,7 +207,10 @@ final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionRecei
             @Override public void onBatchScanResults(List<ScanResult> results) {
                 for (ScanResult result : results) addScanResult(scanResults, result);
             }
-            @Override public void onScanFailed(int errorCode) { scanFinished.countDown(); }
+            @Override public void onScanFailed(int errorCode) {
+                scanError[0] = errorCode;
+                scanFinished.countDown();
+            }
         };
 
         try {
@@ -201,13 +219,23 @@ final class VoidBluetoothBridge implements VoidActivity.BluetoothPermissionRecei
         } finally {
             try { scanner.stopScan(callback); } catch (RuntimeException ignored) { }
         }
+        if (scanError[0] >= 0) {
+            throw new BridgeException("Android BLE scanning failed (error " + scanError[0]
+                    + "). Check Bluetooth and Location settings, then try again.", "NetworkError");
+        }
         ArrayList<BluetoothDevice> matches = new ArrayList<>();
         ArrayList<BluetoothDevice> scanned;
         synchronized (scanResults) { scanned = new ArrayList<>(scanResults.values()); }
         for (BluetoothDevice device : scanned) {
             if (matchesFilters(device, options)) matches.add(device);
         }
-        if (matches.isEmpty()) throw new BridgeException("No matching Bluetooth LE devices were found.", "NotFoundError");
+        if (matches.isEmpty()) {
+            String locationHint = Build.VERSION.SDK_INT < 31
+                    ? " Make sure device Location is on; Android 11 and earlier require it for BLE scans."
+                    : " Make sure the device is advertising Bluetooth Low Energy and is nearby.";
+            throw new BridgeException("No matching Bluetooth LE devices were found." + locationHint,
+                    "NotFoundError");
+        }
         BluetoothDevice selected = chooseDevice(matches);
         if (selected == null) throw new BridgeException("No Bluetooth device was selected.", "NotFoundError");
         String id = UUID.randomUUID().toString();

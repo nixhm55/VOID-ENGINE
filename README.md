@@ -20,6 +20,8 @@ Choose one profile in the **Build VOID** workflow. **Void Engine Lite** keeps th
 
 In Max, secure HTTPS sites can use `navigator.bluetooth` to request a nearby BLE device, connect to its GATT services, read and write characteristics, and receive notifications. VOID asks for origin access with a native three-choice prompt, then shows a native device picker. Bluetooth is limited to BLE; classic Bluetooth and Web Bluetooth APIs outside this supported subset are not exposed. Android uses the platform BLE APIs; macOS, Windows, and Linux use the system BLE stack through the native engine.
 
+Max location uses each platform's location service. On Android, granting VOID location permission does not switch on device-wide Location; if it is off, VOID opens Android's Location settings and waits for you to turn it on. Android 11 and earlier also require Location to be on for BLE scanning. The Linux Debian package installs GeoClue; an AppImage needs the host system's GeoClue service available.
+
 <h2 align="center">Build with GitHub Actions</h2>
 
 This is the quickest way to build from your own fork. It does not require installing the VOID command-line client or configuring its token.

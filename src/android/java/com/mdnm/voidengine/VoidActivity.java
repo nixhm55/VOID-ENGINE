@@ -14,12 +14,14 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.location.LocationManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.provider.Settings;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
@@ -53,6 +55,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class VoidActivity extends NativeActivity {
@@ -61,6 +65,9 @@ public final class VoidActivity extends NativeActivity {
     private static final int STORAGE_PERMISSION_REQUEST = 0x564e;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 0x564d;
     private static final int BLUETOOTH_PERMISSION_REQUEST = 0x5648;
+    private static final int LOCATION_SETTINGS_REQUEST = 0x5650;
+    private static final int BLUETOOTH_LOCATION_SETTINGS_REQUEST = 0x5651;
+    private static final int BLUETOOTH_ENABLE_REQUEST = 0x5652;
     private static final String NOTIFICATION_CHANNEL_ID = "void_web_notifications";
     private static final String MEDIA_CHANNEL_ID = "void_media_playback";
     private static final int MEDIA_NOTIFICATION_ID = 0x564c;
@@ -114,7 +121,12 @@ public final class VoidActivity extends NativeActivity {
     private DownloadInfo pendingDownload;
     private FrameLayout webViewContainer;
     private boolean locationPermissionRequestInFlight;
+    private boolean locationSettingsResolutionInFlight;
     private final ArrayList<PendingLocationRequest> pendingLocationRequests = new ArrayList<>();
+    private final Object bluetoothSystemRequestLock = new Object();
+    private CountDownLatch bluetoothLocationSettingsLatch;
+    private CountDownLatch bluetoothEnableLatch;
+    private int bluetoothEnableResult = RESULT_CANCELED;
     private WebView notificationWebView;
     private WebView mediaWebView;
     private String notificationOrigin;
@@ -499,15 +511,20 @@ public final class VoidActivity extends NativeActivity {
     private void requestLocationPermission(
             String origin, GeolocationPermissions.Callback callback) {
         if (!geolocationEnabled) {
-            callback.invoke(origin, false, true);
+            callback.invoke(origin, false, false);
             return;
         }
         if (origin == null || !origin.toLowerCase(Locale.ROOT).startsWith("https://")) {
-            callback.invoke(origin, false, true);
+            callback.invoke(origin, false, false);
             return;
         }
         if (hasLocationPermission()) {
-            callback.invoke(origin, true, true);
+            if (isDeviceLocationEnabled()) {
+                callback.invoke(origin, true, true);
+            } else {
+                pendingLocationRequests.add(new PendingLocationRequest(origin, callback));
+                openLocationSettingsForGeolocation();
+            }
             return;
         }
 
@@ -530,10 +547,93 @@ public final class VoidActivity extends NativeActivity {
 
     private void finishLocationPermissionRequest(boolean granted) {
         locationPermissionRequestInFlight = false;
+        if (granted && !isDeviceLocationEnabled()) {
+            openLocationSettingsForGeolocation();
+            return;
+        }
+        completeLocationPermissionRequests(granted);
+    }
+
+    private void completeLocationPermissionRequests(boolean granted) {
+        locationSettingsResolutionInFlight = false;
         ArrayList<PendingLocationRequest> requests = new ArrayList<>(pendingLocationRequests);
         pendingLocationRequests.clear();
         for (PendingLocationRequest request : requests) {
-            request.callback.invoke(request.origin, granted, true);
+            // Do not persist a denial: the user may enable Location or retry later.
+            request.callback.invoke(request.origin, granted, granted);
+        }
+    }
+
+    private void openLocationSettingsForGeolocation() {
+        if (locationSettingsResolutionInFlight) return;
+        locationSettingsResolutionInFlight = true;
+        Toast.makeText(this,
+                "Turn on device Location in Android Settings to share your position with this site.",
+                Toast.LENGTH_LONG).show();
+        try {
+            startActivityForResult(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS),
+                    LOCATION_SETTINGS_REQUEST);
+        } catch (RuntimeException error) {
+            completeLocationPermissionRequests(false);
+        }
+    }
+
+    private boolean isDeviceLocationEnabled() {
+        LocationManager manager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (manager == null) return false;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) return manager.isLocationEnabled();
+            return manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+        } catch (RuntimeException error) {
+            return false;
+        }
+    }
+
+    boolean ensureLocationServicesForBluetooth() throws InterruptedException {
+        if (isDeviceLocationEnabled()) return true;
+        final CountDownLatch latch = new CountDownLatch(1);
+        synchronized (bluetoothSystemRequestLock) {
+            bluetoothLocationSettingsLatch = latch;
+        }
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    startActivityForResult(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS),
+                            BLUETOOTH_LOCATION_SETTINGS_REQUEST);
+                } catch (RuntimeException error) {
+                    latch.countDown();
+                }
+            }
+        });
+        boolean returned = latch.await(2, TimeUnit.MINUTES);
+        synchronized (bluetoothSystemRequestLock) {
+            if (bluetoothLocationSettingsLatch == latch) bluetoothLocationSettingsLatch = null;
+        }
+        return returned && isDeviceLocationEnabled();
+    }
+
+    boolean requestBluetoothEnable() throws InterruptedException {
+        final CountDownLatch latch = new CountDownLatch(1);
+        synchronized (bluetoothSystemRequestLock) {
+            bluetoothEnableResult = RESULT_CANCELED;
+            bluetoothEnableLatch = latch;
+        }
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    startActivityForResult(
+                            new Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE),
+                            BLUETOOTH_ENABLE_REQUEST);
+                } catch (RuntimeException error) {
+                    latch.countDown();
+                }
+            }
+        });
+        boolean returned = latch.await(2, TimeUnit.MINUTES);
+        synchronized (bluetoothSystemRequestLock) {
+            if (bluetoothEnableLatch == latch) bluetoothEnableLatch = null;
+            return returned && bluetoothEnableResult == RESULT_OK;
         }
     }
 
@@ -874,6 +974,10 @@ public final class VoidActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         finishLocationPermissionRequest(false);
+        synchronized (bluetoothSystemRequestLock) {
+            if (bluetoothLocationSettingsLatch != null) bluetoothLocationSettingsLatch.countDown();
+            if (bluetoothEnableLatch != null) bluetoothEnableLatch.countDown();
+        }
         if (bluetoothBridge != null) {
             bluetoothBridge.closeBridge();
             bluetoothBridge = null;
@@ -890,6 +994,26 @@ public final class VoidActivity extends NativeActivity {
             mediaActionReceiverRegistered = false;
         }
         super.onDestroy();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == LOCATION_SETTINGS_REQUEST) {
+            completeLocationPermissionRequests(
+                    hasLocationPermission() && isDeviceLocationEnabled());
+        } else if (requestCode == BLUETOOTH_LOCATION_SETTINGS_REQUEST) {
+            synchronized (bluetoothSystemRequestLock) {
+                if (bluetoothLocationSettingsLatch != null) {
+                    bluetoothLocationSettingsLatch.countDown();
+                }
+            }
+        } else if (requestCode == BLUETOOTH_ENABLE_REQUEST) {
+            synchronized (bluetoothSystemRequestLock) {
+                bluetoothEnableResult = resultCode;
+                if (bluetoothEnableLatch != null) bluetoothEnableLatch.countDown();
+            }
+        }
     }
 
     private final class VoidNotificationBridge {

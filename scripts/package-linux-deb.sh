@@ -36,7 +36,7 @@ Section: web
 Priority: optional
 Architecture: amd64
 Maintainer: VOID Engine
-Depends: libwebkit2gtk-4.1-0
+Depends: libwebkit2gtk-4.1-0, geoclue-2.0
 Description: $app_name web application
 EOF
 dpkg-deb --build --root-owner-group "$stage" "$output"
