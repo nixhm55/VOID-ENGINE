@@ -141,7 +141,36 @@ jobs:
       matrix:
         format: ${{ fromJSON(inputs.windows_format == 'both' && '["exe","msi"]' || format('["{0}"]', inputs.windows_format)) }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Fetch source snapshot without Git checkout overhead
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'void-source.tar.gz'
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/tarball/$env:GITHUB_SHA"
+          & curl.exe --fail --location --silent --show-error --retry 3 `
+            --header 'Accept: application/vnd.github+json' `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --output $archive $uri
+          if ($LASTEXITCODE -ne 0) { throw "Could not download source snapshot (curl exit $LASTEXITCODE)" }
+          if (-not (Test-Path -LiteralPath $archive) -or (Get-Item -LiteralPath $archive).Length -eq 0) {
+            throw 'GitHub returned an empty source snapshot.'
+          }
+          & tar.exe -xzf $archive --strip-components=1 -C $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw "Could not extract source snapshot (tar exit $LASTEXITCODE)" }
+          foreach ($path in @(
+            'void.json',
+            'scripts/configure-build.mjs',
+            'scripts/prepare-branding.mjs',
+            'scripts/download-master-binary.mjs',
+            'scripts/prepare-windows-build.mjs',
+            'scripts/set-windows-icon.ps1',
+            'scripts/package-windows-msi.ps1'
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path))) {
+              throw "Source snapshot is missing required packaging file: $path"
+            }
+          }
       - name: Prepare Windows app metadata, icon, and master binary
         id: configure
         env:
@@ -158,6 +187,7 @@ jobs:
           MASTER_BINARY_OUTPUT: target/master/void.exe
         run: node scripts/prepare-windows-build.mjs
       - name: Apply per-app Windows executable icon
+        if: ${{ matrix.format == 'exe' }}
         shell: pwsh
         run: ./scripts/set-windows-icon.ps1 -Executable target/master/void.exe -IconFile branding/app.ico
       - name: Package Windows executable and config
