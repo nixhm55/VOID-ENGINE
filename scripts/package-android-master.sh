@@ -93,6 +93,32 @@ else:
     tag = next((line.split(":", 1)[1].strip() for line in block
                 if re.match(r"^\s*tag\s*:", line)), "null")
     lines[start:end] = ["usesFramework:", "  ids:"] + [f"  - {value}" for value in ids] + [f"  tag: {tag}"]
+
+# Android 11+ rejects targetSdk 30+ APKs when resources.arsc is compressed.
+# Preserve Apktool's existing entries while forcing the resource table to be
+# stored (uncompressed) in its rebuilt APK.
+start = next((i for i, line in enumerate(lines) if re.match(r"^doNotCompress\s*:", line)), None)
+if start is None:
+    lines.extend(["", "doNotCompress:", "  - arsc"])
+else:
+    key = re.match(r"^doNotCompress\s*:\s*(.*)$", lines[start])
+    inline = key.group(1).strip() if key else ""
+    if inline.startswith("[") and inline.endswith("]"):
+        entries = [value.strip().strip("'\" ") for value in inline[1:-1].split(",")]
+        if "arsc" not in entries:
+            entries.append("arsc")
+            lines[start] = "doNotCompress: [" + ", ".join(entries) + "]"
+    else:
+        end = start + 1
+        while end < len(lines) and (not lines[end].strip() or lines[end][:1].isspace() or re.match(r"^\s*-\s", lines[end])):
+            end += 1
+        block = lines[start + 1:end]
+        entries = [match.group(1).strip("'\" ") for line in block
+                   if (match := re.match(r"^\s*-\s*(.*?)\s*$", line))]
+        if "arsc" not in entries:
+            indentation = next((re.match(r"^(\s*)-\s", line).group(1) for line in block
+                                if re.match(r"^\s*-\s", line)), "  ")
+            lines.insert(end, f"{indentation}- arsc")
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
@@ -120,5 +146,30 @@ signed="${temp_dir}/signed.apk"
 "${tools_dir}/apksigner" sign --ks "$keystore" --ks-pass "pass:${keystore_password}" \
   --key-pass "pass:${keystore_password}" --out "$signed" "$aligned"
 "${tools_dir}/apksigner" verify "$signed"
+"${tools_dir}/zipalign" -c -v 4 "$signed"
+python3 - "$signed" <<'PY'
+import struct
+import sys
+import zipfile
+
+apk_path = sys.argv[1]
+with zipfile.ZipFile(apk_path) as archive:
+    try:
+        resources = archive.getinfo("resources.arsc")
+    except KeyError:
+        raise SystemExit("Packaged APK is missing resources.arsc")
+    if resources.compress_type != zipfile.ZIP_STORED:
+        raise SystemExit("Packaged APK compresses resources.arsc; Android 11+ requires it to be stored")
+    with open(apk_path, "rb") as apk:
+        apk.seek(resources.header_offset)
+        header = apk.read(30)
+        if header[:4] != b"PK\x03\x04":
+            raise SystemExit("Could not read resources.arsc local ZIP header")
+        name_length, extra_length = struct.unpack_from("<HH", header, 26)
+        data_offset = resources.header_offset + 30 + name_length + extra_length
+    if data_offset % 4:
+        raise SystemExit("resources.arsc is not aligned on a 4-byte boundary")
+    print(f"Verified signed resources.arsc is uncompressed and 4-byte aligned (offset {data_offset})")
+PY
 mv "$signed" "$output_apk"
 echo "Packaged ${app_name} (${app_package}) as ${output_apk}"
