@@ -95,7 +95,7 @@ jobs:
     if: ${{ inputs.build_macos }}
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Configure app metadata
         id: configure
         env:
@@ -126,7 +126,7 @@ jobs:
           APP_VERSION: ${{ inputs.version }}
           MASTER_BINARY_PATH: target/master/void
         run: node scripts/package-macos-dmg.mjs
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ steps.configure.outputs.app_slug }}-macos-dmg
           path: output/*.dmg
@@ -217,7 +217,7 @@ jobs:
           MASTER_BINARY_PATH: target/master/void.exe
         shell: pwsh
         run: ./scripts/package-windows-msi.ps1
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: ${{ matrix.format == 'exe' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-exe
@@ -225,7 +225,7 @@ jobs:
             output/${{ steps.configure.outputs.app_slug }}.exe
             output/${{ steps.configure.outputs.app_slug }}.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: ${{ matrix.format == 'msi' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-msi
@@ -241,7 +241,7 @@ jobs:
       matrix:
         format: ${{ fromJSON(inputs.linux_format == 'both' && '["deb","appimage"]' || format('["{0}"]', inputs.linux_format)) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Configure app metadata
         id: configure
         env:
@@ -274,7 +274,7 @@ jobs:
         run: bash scripts/package-linux-deb.sh target/master/void "output/${{ steps.configure.outputs.app_slug }}.deb"
       - name: Cache minimal Linux AppImage dependency
         if: ${{ matrix.format == 'appimage' }}
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         continue-on-error: true
         with:
           path: .cache/linux-apt-archives
@@ -294,7 +294,7 @@ jobs:
           fi
       - name: Cache AppImage tool
         if: ${{ matrix.format == 'appimage' }}
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         continue-on-error: true
         with:
           path: .cache/appimagetool-x86_64.AppImage
@@ -334,7 +334,7 @@ jobs:
           fi
           chmod +x .cache/appimagetool-x86_64.AppImage
           ARCH=x86_64 .cache/appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir "output/${APP_SLUG}.AppImage"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ steps.configure.outputs.app_slug }}-linux-${{ matrix.format }}
           path: output/*
@@ -348,7 +348,7 @@ jobs:
       CARGO_APK_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
       CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Configure app metadata
         id: configure
         env:
@@ -368,16 +368,16 @@ jobs:
           ICON_URL: ${{ inputs.icon_url }}
         run: node scripts/prepare-branding.mjs
       - name: Cache Android SDK platform, build tools, and signing key
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         continue-on-error: true
         with:
           path: |
             /usr/local/lib/android/sdk/platforms/android-33
             /usr/local/lib/android/sdk/build-tools/34.0.0
             /home/runner/.android/debug.keystore
-          key: android-sdk-v4-${{ runner.os }}-platform-33-build-tools-34.0.0-${{ hashFiles('.github/workflows/build.yml', 'scripts/package-android-master.sh') }}
+          key: android-sdk-v5-${{ runner.os }}-platform-33-build-tools-34.0.0-${{ hashFiles('.github/workflows/build.yml', 'scripts/package-android-master.sh') }}
           restore-keys: |
-            android-sdk-v4-${{ runner.os }}-
+            android-sdk-v5-${{ runner.os }}-
       - name: Ensure Android packaging tools and signing key
         run: |
           set -euo pipefail
@@ -401,13 +401,13 @@ jobs:
           fi
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
       - name: Cache Android APK repackager
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         continue-on-error: true
         with:
           path: .cache/apktool-3.0.3.jar
           key: apktool-3.0.3-dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423
       - name: Cache Android master APK
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         continue-on-error: true
         with:
           path: target/master/void-android-template.apk
@@ -433,7 +433,7 @@ jobs:
           ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
           APP_VERSION: ${{ inputs.version }}
         run: bash scripts/package-android-master.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.apk"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ steps.configure.outputs.app_slug }}-android-apk
           path: output/*.apk
