@@ -93,11 +93,21 @@
       typeof event.composedPath === 'function'
         ? event.composedPath()
         : [event.target];
+        
     for (const node of path) {
       if (!node || node.nodeType !== 1) continue;
       if (node.matches(NO_DRAG)) return false;
+    }
+
+    if (event.clientY <= 60) {
+        return true;
+    }
+
+    for (const node of path) {
+      if (!node || node.nodeType !== 1) continue;
       if (node.matches(DRAG_REGION)) return true;
     }
+    
     return false;
   };
 
