@@ -22,7 +22,7 @@ In Max, secure HTTPS sites can use `navigator.bluetooth` to request a nearby BLE
 
 Max location uses each platform's location service. On macOS, the generated app declares the macOS Core Location usage description. On Android, granting VOID location permission does not switch on device-wide Location; if it is off, VOID opens Android's Location settings and waits for you to turn it on. Android 11 and earlier also require Location to be on for BLE scanning. The Linux Debian package installs GeoClue; an AppImage needs the host system's GeoClue service available.
 
-On macOS, VOID provides the native App, Edit, and Developer menus. The Edit menu uses native Undo, Redo, Cut, Copy, Paste, and Select All actions; Developer → Inspect Element opens Web Inspector. A wrapped page can add native app-specific menus with `window.voidNativeMenu`:
+On macOS Max builds, VOID provides the native App, Edit, and Developer menus. The Edit menu uses native Undo, Redo, Cut, Copy, Paste, and Select All actions; Developer → Inspect Element opens Web Inspector. A wrapped page can add native app-specific menus with `window.voidNativeMenu`:
 
 ```js
 window.voidNativeMenu.onAction('recent-chat', () => openRecentChat());

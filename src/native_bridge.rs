@@ -1,5 +1,5 @@
 use serde::Deserialize;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 use std::collections::HashSet;
 #[cfg(all(feature = "filesystem", not(target_os = "android")))]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -56,12 +56,12 @@ pub(crate) enum UserEvent {
         uri: String,
         body: String,
     },
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "max"))]
     MenuUpdate {
         origin: String,
         menus: Vec<MenuDefinition>,
     },
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "max"))]
     MenuAction {
         id: String,
     },
@@ -106,7 +106,7 @@ struct IpcCall {
     args: serde_json::Value,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MenuDefinition {
@@ -114,7 +114,7 @@ pub(crate) struct MenuDefinition {
     pub(crate) items: Vec<MenuItemDefinition>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MenuItemDefinition {
@@ -122,7 +122,7 @@ pub(crate) struct MenuItemDefinition {
     pub(crate) label: String,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MenuUpdateIpc {
@@ -130,11 +130,11 @@ struct MenuUpdateIpc {
     menus: Vec<MenuDefinition>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 const MAX_MENU_UPDATE_BYTES: usize = 16 * 1024;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 const MAX_DYNAMIC_MENUS: usize = 5;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 const MAX_DYNAMIC_MENU_ITEMS: usize = 30;
 
 #[cfg(all(target_os = "macos", feature = "geolocation"))]
@@ -211,9 +211,9 @@ pub(crate) fn configure(
     let builder = builder.with_initialization_script(GEOLOCATION_SHIM);
     #[cfg(not(all(target_os = "macos", feature = "geolocation")))]
     let builder = builder;
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "max"))]
     let builder = builder.with_initialization_script(include_str!("native_bridge/menu-shim.js"));
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", feature = "max")))]
     let builder = builder;
     #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
     let builder = builder.with_initialization_script(include_str!("android/bluetooth-shim.js"));
@@ -240,7 +240,7 @@ pub(crate) fn configure(
 }
 
 pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>) -> Option<String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "max"))]
     if let Ok(update) = serde_json::from_str::<MenuUpdateIpc>(body) {
         if update.id == "void-menu" {
             if body.len() > MAX_MENU_UPDATE_BYTES {
@@ -398,9 +398,12 @@ fn process_call(uri: &str, body: &str) -> Option<String> {
     ))
 }
 
-#[cfg(all(
-    not(target_os = "android"),
-    any(feature = "bluetooth", feature = "filesystem", target_os = "macos")
+#[cfg(any(
+    all(
+        not(target_os = "android"),
+        any(feature = "bluetooth", feature = "filesystem")
+    ),
+    all(target_os = "macos", feature = "max")
 ))]
 pub(crate) fn secure_origin(uri: &str) -> Option<String> {
     uri.parse::<wry::http::Uri>()
@@ -408,7 +411,7 @@ pub(crate) fn secure_origin(uri: &str) -> Option<String> {
         .and_then(|parsed| secure_origin_from_uri(&parsed))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "max"))]
 fn validate_menu_update(menus: &[MenuDefinition]) -> Result<(), &'static str> {
     if menus.len() > MAX_DYNAMIC_MENUS {
         return Err("at most five dynamic menus are allowed");
@@ -449,7 +452,7 @@ fn validate_menu_update(menus: &[MenuDefinition]) -> Result<(), &'static str> {
     Ok(())
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, target_os = "macos", feature = "max"))]
 mod menu_tests {
     use super::{validate_menu_update, MenuDefinition, MenuItemDefinition};
 

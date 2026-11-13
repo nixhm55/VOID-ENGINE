@@ -61,7 +61,7 @@ futures-util = { version = "0.3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-muda = { version = "0.21.2", optional = true }
+muda = { version = "0.21.2", default-features = false, optional = true }
 rfd = { version = "0.17.2", default-features = false, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

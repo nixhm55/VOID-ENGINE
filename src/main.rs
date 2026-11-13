@@ -57,17 +57,6 @@ fn with_browser_navigation(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     navigation::apply(builder)
 }
 
-fn with_developer_tools(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
-    #[cfg(all(target_os = "macos", feature = "max"))]
-    {
-        builder.with_devtools(true)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        builder
-    }
-}
-
 #[derive(Parser, Debug)]
 #[command(
     name = "void",
@@ -314,14 +303,15 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
     let webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
         let target_host = notification_host(&target_url);
+        let builder = WebViewBuilder::new();
+        #[cfg(all(target_os = "macos", feature = "max"))]
+        let builder = builder.with_devtools(true);
         native_bridge::configure(
             with_browser_navigation(
-                window_drag::apply(user_agent::apply(with_developer_tools(
-                    WebViewBuilder::new(),
-                )))
-                // Keep camera/microphone requests on the platform's normal
-                // permission path instead of implicitly granting them.
-                .with_permission_handler(permissions::response),
+                window_drag::apply(user_agent::apply(builder))
+                    // Keep camera/microphone requests on the platform's normal
+                    // permission path instead of implicitly granting them.
+                    .with_permission_handler(permissions::response),
             ),
             target_host.clone(),
             target_host,
@@ -335,12 +325,13 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let (base_dir, entry_file) = resolve_local_asset(&asset_target);
         let entry_url = format!("void://localhost/{entry_file}");
 
+        let builder = WebViewBuilder::new();
+        #[cfg(all(target_os = "macos", feature = "max"))]
+        let builder = builder.with_devtools(true);
         let builder = native_bridge::configure(
             with_browser_navigation(
-                window_drag::apply(user_agent::apply(with_developer_tools(
-                    WebViewBuilder::new(),
-                )))
-                .with_permission_handler(permissions::response),
+                window_drag::apply(user_agent::apply(builder))
+                    .with_permission_handler(permissions::response),
             ),
             notification_host(&entry_url),
             None,
