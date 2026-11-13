@@ -59,6 +59,10 @@ const BLOCK_HAS_SIGNATURE: i32 = 1 << 30;
 static AUTH_GATE: Mutex<()> = Mutex::new(());
 static AUTH_SLOT: Mutex<Option<mpsc::Sender<Result<(), String>>>> = Mutex::new(None);
 static LA_FRAMEWORK: OnceLock<bool> = OnceLock::new();
+// The prompt is asynchronous, so the reason string has to outlive the call that
+// starts it. Reasons are a small fixed set, so one immortal copy of each is
+// cheaper and safer than trying to free it when the reply block runs.
+static AUTH_REASONS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 
 pub(super) fn authenticate(reason: &str) -> Result<(), String> {
     // Overlapping prompts would race for the single reply slot.
@@ -105,7 +109,7 @@ pub(super) fn authenticate(reason: &str) -> Result<(), String> {
             .map_err(|_| "The macOS authentication bridge is unavailable.".to_string())? =
             Some(sender);
 
-        let reason_string = nsstring(reason);
+        let reason_string = retained_reason(reason);
         let evaluate: unsafe extern "C" fn(Object, Selector, isize, Object, Object) =
             mem::transmute(objc_msgSend as *const ());
         evaluate(
@@ -115,10 +119,6 @@ pub(super) fn authenticate(reason: &str) -> Result<(), String> {
             reason_string,
             auth_block() as Object,
         );
-        // The context retains the reason for the duration of the evaluation.
-        if !reason_string.is_null() {
-            send_void(reason_string, selector(c"release"));
-        }
 
         let outcome = receiver.recv_timeout(AUTH_TIMEOUT);
         if let Ok(mut slot) = AUTH_SLOT.lock() {
@@ -209,6 +209,23 @@ unsafe fn describe_error(error: Object) -> String {
         -1004 => "Authentication needs a visible app window.".to_string(),
         _ => "macOS could not confirm your identity.".to_string(),
     }
+}
+
+unsafe fn retained_reason(reason: &str) -> Object {
+    if let Ok(mut cache) = AUTH_REASONS.lock() {
+        if let Some((_, pointer)) = cache.iter().find(|(text, _)| text == reason) {
+            return *pointer as Object;
+        }
+        let string = nsstring(reason);
+        if string.is_null() {
+            return string;
+        }
+        cache.push((reason.to_string(), string as usize));
+        return string;
+    }
+
+    // A poisoned cache must not block authentication; the string simply leaks.
+    nsstring(reason)
 }
 
 unsafe fn nsstring(value: &str) -> Object {

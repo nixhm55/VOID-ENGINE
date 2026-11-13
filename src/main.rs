@@ -282,6 +282,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
     let _webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
+        let target_host = notification_host(&target_url);
         native_bridge::configure(
             with_browser_navigation(
                 user_agent::apply(WebViewBuilder::new())
@@ -289,7 +290,8 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                     // permission path instead of implicitly granting them.
                     .with_permission_handler(permissions::response),
             ),
-            notification_host(&target_url),
+            target_host.clone(),
+            target_host,
             proxy.clone(),
         )
         .with_url(&target_url)
@@ -306,6 +308,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                     .with_permission_handler(permissions::response),
             ),
             notification_host(&entry_url),
+            None,
             proxy.clone(),
         );
 

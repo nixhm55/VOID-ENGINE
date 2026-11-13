@@ -1,4 +1,6 @@
 use serde::Deserialize;
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tao::event_loop::EventLoopProxy;
 use wry::{http::Request, WebViewBuilder};
 
@@ -8,6 +10,43 @@ mod desktop_auth;
 mod desktop_bluetooth;
 #[cfg(all(feature = "filesystem", not(target_os = "android")))]
 mod filesystem;
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+const MAX_FILESYSTEM_WORKERS: usize = 4;
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+static FILESYSTEM_WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Bounds how many filesystem calls may run at once so a page cannot spawn a
+/// thread per message.
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+struct WorkerSlot;
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+impl Drop for WorkerSlot {
+    fn drop(&mut self) {
+        FILESYSTEM_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+fn take_worker_slot() -> Option<WorkerSlot> {
+    let mut current = FILESYSTEM_WORKERS.load(Ordering::SeqCst);
+    loop {
+        if current >= MAX_FILESYSTEM_WORKERS {
+            return None;
+        }
+        match FILESYSTEM_WORKERS.compare_exchange(
+            current,
+            current + 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return Some(WorkerSlot),
+            Err(actual) => current = actual,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum UserEvent {
@@ -111,8 +150,13 @@ const GEOLOCATION_SHIM: &str = r#"(() => {
 pub(crate) fn configure(
     builder: WebViewBuilder,
     allowed_notification_host: Option<String>,
+    allowed_folder_host: Option<String>,
     proxy: EventLoopProxy<UserEvent>,
 ) -> WebViewBuilder {
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    filesystem::set_allowed_host(allowed_folder_host);
+    #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
+    let _ = allowed_folder_host;
     #[cfg(target_os = "macos")]
     let builder = crate::native_notifications::install(builder, allowed_notification_host.clone());
     #[cfg(not(target_os = "macos"))]
@@ -126,7 +170,8 @@ pub(crate) fn configure(
     #[cfg(not(all(feature = "bluetooth", not(target_os = "android"))))]
     let builder = builder;
     #[cfg(all(feature = "filesystem", not(target_os = "android")))]
-    let builder = builder.with_initialization_script(include_str!("filesystem-shim.js"));
+    let builder =
+        builder.with_initialization_script(include_str!("native_bridge/filesystem-shim.js"));
     #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
     let builder = builder;
 
@@ -163,11 +208,22 @@ pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>)
             let method = call.method;
             let args = call.args;
             let worker_proxy = _proxy.clone();
+            let Some(slot) = take_worker_slot() else {
+                return Some(reply_script(
+                    "__voidFileSystemReply",
+                    &id,
+                    Err((
+                        "Too many folder operations are already running.".into(),
+                        "InvalidStateError",
+                    )),
+                ));
+            };
             std::thread::Builder::new()
                 .name("void-filesystem-ipc".into())
                 .spawn(move || {
                     // Layer 1 authentication and Layer 3 approval prompts block
                     // this worker, never the UI event loop.
+                    let _slot = slot;
                     let result = filesystem::handle(&origin, &method, &args, &worker_proxy);
                     let script = reply_script("__voidFileSystemReply", &id, result);
                     let _ = worker_proxy.send_event(UserEvent::Script {

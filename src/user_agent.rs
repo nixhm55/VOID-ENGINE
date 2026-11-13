@@ -48,7 +48,7 @@ pub(crate) fn current() -> &'static str {
 /// JavaScript-level environment probe the page performs.
 #[cfg(target_os = "macos")]
 mod preload {
-    use super::{current, GEMINI_DESKTOP_CLIENT};
+    use super::current;
     use std::sync::OnceLock;
 
     const TEMPLATE: &str = r#"(() => {
@@ -56,25 +56,19 @@ mod preload {
   window.__voidDesktopIdentityInstalled = true;
 
   const NATIVE_USER_AGENT = __VOID_USER_AGENT__;
-  const CLIENT_SUFFIX = __VOID_CLIENT_SUFFIX__;
 
-  // WKWebView already sends this agent on the wire. Mirror it for pages that
-  // read navigator.userAgent before the native override is reflected.
+  // WKWebView sends this agent on the wire. Pin the JS view to the exact same
+  // string so a page can never observe a different identity than the network
+  // did, even if it reads navigator before the native override is reflected.
   try {
-    const observed = String(navigator.userAgent || '');
-    if (!observed.includes(CLIENT_SUFFIX)) {
-      const spoofed = observed
-        ? observed.replace(/\s+$/, '') + ' ' + CLIENT_SUFFIX
-        : NATIVE_USER_AGENT;
-      Object.defineProperty(Navigator.prototype, 'userAgent', {
-        configurable: true,
-        get: () => spoofed
-      });
-      Object.defineProperty(Navigator.prototype, 'appVersion', {
-        configurable: true,
-        get: () => spoofed.replace(/^Mozilla\//, '')
-      });
-    }
+    Object.defineProperty(Navigator.prototype, 'userAgent', {
+      configurable: true,
+      get: () => NATIVE_USER_AGENT
+    });
+    Object.defineProperty(Navigator.prototype, 'appVersion', {
+      configurable: true,
+      get: () => NATIVE_USER_AGENT.replace(/^Mozilla\//, '')
+    });
   } catch (_) {}
 
   // Best-effort desktop flags. Configurable so a page that defines its own
@@ -128,11 +122,7 @@ mod preload {
         SCRIPT
             .get_or_init(|| {
                 let agent = serde_json::to_string(current()).unwrap_or_else(|_| "\"\"".to_string());
-                let suffix = serde_json::to_string(GEMINI_DESKTOP_CLIENT)
-                    .unwrap_or_else(|_| "\"\"".to_string());
-                TEMPLATE
-                    .replace("__VOID_USER_AGENT__", &agent)
-                    .replace("__VOID_CLIENT_SUFFIX__", &suffix)
+                TEMPLATE.replace("__VOID_USER_AGENT__", &agent)
             })
             .as_str()
     }

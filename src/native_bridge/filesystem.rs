@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::{Component, Path, PathBuf},
     sync::{mpsc, Mutex, OnceLock},
     time::{Duration, UNIX_EPOCH},
@@ -23,6 +24,9 @@ struct Grant {
 }
 
 static GRANTED_ROOTS: OnceLock<Mutex<HashMap<RootKey, Grant>>> = OnceLock::new();
+// Only the app's configured website may touch the folder bridge; every other
+// origin is refused before a prompt can be raised.
+static ALLOWED_HOST: OnceLock<Option<String>> = OnceLock::new();
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -33,6 +37,13 @@ pub(super) fn handle(
     args: &Value,
     proxy: &EventLoopProxy<UserEvent>,
 ) -> Reply {
+    if !origin_allowed(origin) {
+        return Err((
+            "Folder access is limited to the website this app was built for.".into(),
+            "SecurityError",
+        ));
+    }
+
     match method {
         "filesystem.pickDirectory" => pick_directory(origin, args, proxy),
         "filesystem.requestWriteAccess" => request_write_access(origin, args),
@@ -115,6 +126,24 @@ fn pick_directory(origin: &str, args: &Value, proxy: &EventLoopProxy<UserEvent>)
         "name": name,
         "mode": if writable { "readwrite" } else { "read" },
     }))
+}
+
+pub(super) fn set_allowed_host(host: Option<String>) {
+    let _ = ALLOWED_HOST.set(host);
+}
+
+fn origin_allowed(origin: &str) -> bool {
+    match ALLOWED_HOST.get() {
+        Some(Some(host)) => origin
+            .parse::<wry::http::Uri>()
+            .ok()
+            .and_then(|uri| uri.host().map(|value| value.eq_ignore_ascii_case(host)))
+            .unwrap_or(false),
+        // Local builds have no remote host; only the bundled scheme is trusted.
+        Some(None) => origin == "void://localhost",
+        // Fail closed when the host was never configured.
+        None => false,
+    }
 }
 
 fn request_write_access(origin: &str, args: &Value) -> Reply {
@@ -257,7 +286,7 @@ fn write_file(origin: &str, args: &Value, proxy: &EventLoopProxy<UserEvent>) -> 
 
     require_approval(origin, &id, &grant, "write", &target, proxy)?;
 
-    fs::write(&target, &contents).map_err(|error| {
+    write_atomic(&target, &contents).map_err(|error| {
         (
             format!("Could not write this file: {error}"),
             "NoModificationAllowedError",
@@ -548,6 +577,37 @@ fn write_target(root: &Path, segments: &[String]) -> Result<PathBuf, (String, &'
         }
     }
     Ok(target)
+}
+
+/// Replace a file in one step: write a sibling temp file, flush it, then rename
+/// over the target. A crash or a full disk can no longer leave a half-written
+/// document, and `create_new` refuses to follow a symlink swapped in after the
+/// path check.
+fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let temp = parent.join(format!(".{name}.void-{}.tmp", uuid::Uuid::new_v4()));
+
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        if let Ok(metadata) = fs::metadata(target) {
+            let _ = fs::set_permissions(&temp, metadata.permissions());
+        }
+        fs::rename(&temp, target)
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 fn exceeds_write_limit() -> (String, &'static str) {
