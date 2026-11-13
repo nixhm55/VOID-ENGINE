@@ -22,7 +22,7 @@ In Max, secure HTTPS sites can use `navigator.bluetooth` to request a nearby BLE
 
 Max location uses each platform's location service. On macOS, the generated app declares the macOS Core Location usage description. On Android, granting VOID location permission does not switch on device-wide Location; if it is off, VOID opens Android's Location settings and waits for you to turn it on. Android 11 and earlier also require Location to be on for BLE scanning. The Linux Debian package installs GeoClue; an AppImage needs the host system's GeoClue service available.
 
-On macOS Max builds, VOID provides the native App, Edit, and Developer menus. The Edit menu uses native Undo, Redo, Cut, Copy, Paste, and Select All actions; Developer → Inspect Element opens Web Inspector. A wrapped page can add native app-specific menus with `window.voidNativeMenu`:
+On macOS Max builds, VOID provides native App, File, Edit, View, Window, Developer, and Help menus. The Edit menu uses native Undo, Redo, Cut, Copy, Paste, and Select All actions; Developer → Inspect Element opens Web Inspector. A wrapped page can add native app-specific menus with `window.voidNativeMenu`:
 
 ```js
 window.voidNativeMenu.onAction('recent-chat', () => openRecentChat());
@@ -34,7 +34,7 @@ window.voidNativeMenu.setMenus([
 ]);
 ```
 
-Menu labels and action IDs are validated and size-limited by the native engine. Actions are dispatched only while the page that registered the menus remains the active secure origin. macOS packaging accepts PNG and ICO favicons and rasterizes safe SVG favicons; when no supported site icon is available, it packages the generated VOID fallback icon.
+Menu labels and action IDs are validated and size-limited by the native engine. Actions are dispatched only while the page that registered the menus remains the active secure origin. Icon discovery ranks Apple touch icons, declared sizes, and decoded image resolution, then converts supported PNG, ICO, SVG, WebP, JPEG, and other system-decodable formats to PNG for packaging. If the site has no usable icon, VOID packages its generated fallback icon.
 
 <h2 align="center">Build with GitHub Actions</h2>
 

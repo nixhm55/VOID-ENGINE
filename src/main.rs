@@ -405,25 +405,23 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                 }
             }
             #[cfg(all(target_os = "macos", feature = "max"))]
+            Event::UserEvent(native_bridge::UserEvent::InspectElement) => {
+                webview.open_devtools();
+            }
+            #[cfg(all(target_os = "macos", feature = "max"))]
             Event::UserEvent(native_bridge::UserEvent::MenuAction { id }) => {
-                if native_menu::NativeMenu::is_inspect_element(&id) {
-                    webview.open_devtools();
-                } else {
-                    let current_origin = webview
-                        .url()
-                        .ok()
-                        .and_then(|url| native_bridge::secure_origin(&url));
-                    native_menu.clear_if_origin_mismatch(current_origin.as_deref());
-                    if let Some(action_id) =
-                        native_menu.action_for(&id, current_origin.as_deref())
-                    {
-                        if let Ok(encoded_id) = serde_json::to_string(action_id) {
-                            let script = format!(
-                                "if (typeof window.__voidNativeMenuAction === 'function') window.__voidNativeMenuAction({encoded_id});"
-                            );
-                            if let Err(error) = webview.evaluate_script(&script) {
-                                eprintln!("Could not dispatch native menu action: {error}");
-                            }
+                let current_origin = webview
+                    .url()
+                    .ok()
+                    .and_then(|url| native_bridge::secure_origin(&url));
+                native_menu.clear_if_origin_mismatch(current_origin.as_deref());
+                if let Some(action_id) = native_menu.action_for(&id, current_origin.as_deref()) {
+                    if let Ok(encoded_id) = serde_json::to_string(action_id) {
+                        let script = format!(
+                            "if (typeof window.__voidNativeMenuAction === 'function') window.__voidNativeMenuAction({encoded_id});"
+                        );
+                        if let Err(error) = webview.evaluate_script(&script) {
+                            eprintln!("Could not dispatch native menu action: {error}");
                         }
                     }
                 }

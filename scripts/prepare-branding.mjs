@@ -5,7 +5,9 @@ import { spawnSync } from 'node:child_process';
 import zlib from 'node:zlib';
 
 const outputDir = 'branding';
-const maxIconBytes = 256 * 1024;
+const maxIconBytes = 4 * 1024 * 1024;
+const maxPageBytes = 2 * 1024 * 1024;
+const maxIconCandidates = 64;
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 function crc32(buffer) {
@@ -149,37 +151,106 @@ function icoToPng(bytes) {
   return null;
 }
 
-function svgToPng(bytes) {
-  if (process.platform !== 'darwin') return null;
-  const svg = bytes.toString('utf8');
-  if (!/^\s*(?:<\?xml\b[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg\b/i.test(svg)
-      || /<!DOCTYPE|<!ENTITY|<\s*(?:script|foreignObject|iframe|object|embed)\b/i.test(svg)
-      || /\b(?:href|src)\s*=\s*["']\s*(?!#)[^"']*["']/i.test(svg)
-      || /\b(?:on[a-z0-9_-]+)\s*=/i.test(svg)
-      || /@import\b/i.test(svg)
-      || /url\(\s*(?!#)[^)]+\)/i.test(svg)) return null;
+function isSvg(bytes, candidate) {
+  const mime = (candidate.type || '').toLowerCase();
+  const pathname = new URL(candidate.url).pathname.toLowerCase();
+  return mime.includes('svg') || pathname.endsWith('.svg')
+    || /^\s*(?:<\?xml\b[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg\b/i.test(bytes.toString('utf8', 0, 512));
+}
 
-  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'void-svg-icon-'));
-  const source = path.join(temporaryDirectory, 'icon.svg');
+function isSafeSvg(bytes) {
+  const svg = bytes.toString('utf8');
+  return /^\s*(?:<\?xml\b[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg\b/i.test(svg)
+    && !/<!DOCTYPE|<!ENTITY|<\s*(?:script|foreignObject|iframe|object|embed)\b/i.test(svg)
+    && !/\b(?:href|src)\s*=\s*["']\s*(?!#)[^"']*["']/i.test(svg)
+    && !/\b(?:on[a-z0-9_-]+)\s*=/i.test(svg)
+    && !/@import\b/i.test(svg)
+    && !/url\(\s*(?!#)[^)]+\)/i.test(svg);
+}
+
+function imageExtension(candidate, bytes) {
+  const mime = (candidate.type || '').toLowerCase().split(';', 1)[0].trim();
+  const mimeExtensions = {
+    'image/avif': '.avif',
+    'image/bmp': '.bmp',
+    'image/gif': '.gif',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/svg+xml': '.svg',
+    'image/vnd.microsoft.icon': '.ico',
+    'image/webp': '.webp',
+    'image/x-icon': '.ico',
+  };
+  if (mimeExtensions[mime]) return mimeExtensions[mime];
+  const pathname = new URL(candidate.url).pathname;
+  const extension = path.extname(pathname).toLowerCase();
+  if (/^\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp)$/.test(extension)) return extension;
+  if (bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP') return '.webp';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return '.jpg';
+  if (isSvg(bytes, candidate)) return '.svg';
+  return '.img';
+}
+
+function convertImageToPng(bytes, candidate) {
+  if (pngDimensions(bytes)) return bytes;
+  const ico = icoToPng(bytes);
+  if (ico) return ico;
+  if (isSvg(bytes, candidate) && !isSafeSvg(bytes)) {
+    throw new Error('SVG icon contains unsupported or external content');
+  }
+
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'void-image-icon-'));
+  const source = path.join(temporaryDirectory, `icon${imageExtension(candidate, bytes)}`);
   const output = path.join(temporaryDirectory, 'icon.png');
   try {
     fs.writeFileSync(source, bytes);
-    const result = spawnSync('sips', ['-s', 'format', 'png', source, '--out', output], {
-      encoding: 'utf8',
-      timeout: 5000,
-    });
-    if (result.error || result.status !== 0) {
-      console.warn(`Could not rasterize SVG app icon: ${result.error?.message || result.stderr}`);
-      return null;
+    const converters = [];
+    if (process.platform === 'darwin') {
+      converters.push(['sips', ['-s', 'format', 'png', source, '--out', output]]);
     }
-    const png = fs.readFileSync(output);
-    return pngDimensions(png) ? png : null;
-  } catch (error) {
-    console.warn(`Could not rasterize SVG app icon: ${error.message}`);
-    return null;
+    converters.push(['magick', [source, `png:${output}`]]);
+    if (process.platform !== 'win32') converters.push(['convert', [source, output]]);
+    converters.push(['ffmpeg', ['-v', 'error', '-i', source, '-frames:v', '1', output]]);
+    for (const [command, args] of converters) {
+      const result = spawnSync(command, args, {
+        encoding: 'utf8',
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.error || result.status !== 0) continue;
+      try {
+        const png = fs.readFileSync(output);
+        if (pngDimensions(png)) return png;
+      } catch {
+        // Try the next available decoder.
+      }
+      fs.rmSync(output, { force: true });
+    }
+    throw new Error(`No installed image decoder could convert ${candidate.url}`);
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+async function readBoundedResponse(response, limit, label) {
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > limit) throw new Error(`${label} exceeds the ${limit}-byte size limit`);
+  if (!response.body) return Buffer.alloc(0);
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw new Error(`${label} exceeds the ${limit}-byte size limit`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
 }
 
 async function fetchBytes(url) {
@@ -189,11 +260,7 @@ async function fetchBytes(url) {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; VOID icon fetcher)', Accept: 'image/png,image/x-icon,image/*;q=0.8,*/*;q=0.2' },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const declaredLength = Number(response.headers.get('content-length') || 0);
-  if (declaredLength > maxIconBytes) throw new Error('Icon exceeds the 256 KiB size limit');
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > maxIconBytes) throw new Error('Icon exceeds the 256 KiB size limit');
-  return bytes;
+  return readBoundedResponse(response, maxIconBytes, 'Icon');
 }
 
 function parseTagAttributes(tag) {
@@ -228,10 +295,10 @@ function parseIconLinks(html, pageUrl) {
     const attrs = parseTagAttributes(match[0]);
     const rels = (attrs.rel || '').toLowerCase().split(/\s+/);
     const isAppleIcon = rels.some((rel) => rel.startsWith('apple-touch-icon'));
-    if (!rels.includes('icon') && !rels.includes('shortcut') && !isAppleIcon) continue;
+    if (!rels.some((rel) => ['icon', 'shortcut', 'mask-icon', 'fluid-icon'].includes(rel)) && !isAppleIcon) continue;
     if (!attrs.href) continue;
     const candidate = resolveImageUrl(attrs.href, pageUrl, iconArea(attrs.sizes || ''));
-    if (candidate) links.push({ ...candidate, source: 'page' });
+    if (candidate) links.push({ ...candidate, source: 'page', apple: isAppleIcon ? 1 : 0, type: attrs.type || '' });
   }
   return links;
 }
@@ -256,14 +323,13 @@ async function fetchManifestIcons(manifestUrl) {
       headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/manifest+json,application/json;q=0.9,*/*;q=0.2' },
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const text = await response.text();
-    if (Buffer.byteLength(text) > maxIconBytes) throw new Error('Manifest exceeds the 256 KiB size limit');
+    const text = (await readBoundedResponse(response, maxPageBytes, 'Manifest')).toString('utf8');
     const manifest = JSON.parse(text);
     return (Array.isArray(manifest.icons) ? manifest.icons : [])
       .filter((icon) => icon && typeof icon.src === 'string')
       .map((icon) => {
         const candidate = resolveImageUrl(icon.src, response.url || manifestUrl, iconArea(icon.sizes || ''));
-        return candidate ? { ...candidate, source: 'manifest' } : null;
+        return candidate ? { ...candidate, source: 'manifest', apple: 0, type: icon.type || '' } : null;
       })
       .filter(Boolean);
   } catch (error) {
@@ -277,28 +343,41 @@ async function discoverIcon() {
   const site = (process.env.TARGET_URL || process.env.APP_URL || '').trim();
   const candidates = [];
   if (explicit) candidates.push({ url: explicit, area: 0, apple: 0, png: 0, explicit: true });
+  let initialPageUrl = '';
+  let resolvedPageUrl = '';
   if (site) {
     try {
-      const pageUrl = new URL(site.includes('://') ? site : `https://${site}`).href;
-      const response = await fetch(pageUrl, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Mozilla/5.0' } });
+      initialPageUrl = new URL(site.includes('://') ? site : `https://${site}`).href;
+      if (!['http:', 'https:'].includes(new URL(initialPageUrl).protocol)) {
+        throw new Error('Target URL must use HTTP or HTTPS');
+      }
+      resolvedPageUrl = initialPageUrl;
+      const response = await fetch(initialPageUrl, {
+        signal: AbortSignal.timeout(8000),
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/xhtml+xml,*/*;q=0.2' },
+      });
       if (response.ok) {
-        const html = (await response.text()).slice(0, 2 * 1024 * 1024);
-        const resolvedPageUrl = response.url || pageUrl;
+        const html = (await readBoundedResponse(response, maxPageBytes, 'Target page')).toString('utf8');
+        resolvedPageUrl = response.url || initialPageUrl;
         candidates.push(...parseIconLinks(html, resolvedPageUrl));
         const manifestUrls = parseManifestUrls(html, resolvedPageUrl);
         for (const manifestUrl of manifestUrls) {
           candidates.push(...await fetchManifestIcons(manifestUrl));
         }
       }
-      const origin = new URL(response.url || pageUrl).origin;
-      candidates.push(
-        { url: `${origin}/favicon.ico`, area: 0, source: 'site fallback' },
-        { url: `${origin}/favicon.png`, area: 0, source: 'site fallback' },
-        { url: `${origin}/apple-touch-icon.png`, area: 0, source: 'site fallback' },
-      );
     } catch (error) {
       console.warn(`Could not inspect the target page for an icon: ${error.message}`);
     }
+  }
+  for (const pageUrl of new Set([resolvedPageUrl, initialPageUrl].filter(Boolean))) {
+    const origin = new URL(pageUrl).origin;
+    candidates.push(
+      { url: `${origin}/apple-touch-icon.png`, area: 180 * 180, apple: 1, source: 'site fallback' },
+      { url: `${origin}/apple-touch-icon-precomposed.png`, area: 180 * 180, apple: 1, source: 'site fallback' },
+      { url: `${origin}/favicon.ico`, area: 0, apple: 0, source: 'site fallback' },
+      { url: `${origin}/favicon.png`, area: 0, apple: 0, source: 'site fallback' },
+      { url: `${origin}/favicon.svg`, area: 0, apple: 0, source: 'site fallback', type: 'image/svg+xml' },
+    );
   }
 
   const uniqueByUrl = new Map();
@@ -307,6 +386,8 @@ async function discoverIcon() {
     if (!previous) uniqueByUrl.set(candidate.url, { ...candidate });
     else {
       previous.area = Math.max(previous.area || 0, candidate.area || 0);
+      previous.apple = Math.max(previous.apple || 0, candidate.apple || 0);
+      previous.type ||= candidate.type;
       previous.explicit ||= candidate.explicit;
     }
   }
@@ -314,9 +395,11 @@ async function discoverIcon() {
   const tryCandidate = async (candidate) => {
     try {
       const bytes = await fetchBytes(candidate.url);
-      const png = pngDimensions(bytes) ? bytes : (icoToPng(bytes) || svgToPng(bytes));
+      const png = convertImageToPng(bytes, candidate);
       const dimensions = png && pngDimensions(png);
-      return dimensions ? { ...candidate, png, dimensions, size: Math.min(dimensions.width, dimensions.height) } : null;
+      return dimensions
+        ? { ...candidate, png, dimensions, size: Math.min(dimensions.width, dimensions.height) }
+        : null;
     } catch (error) {
       console.warn(`Skipping app icon ${candidate.url}: ${error.message}`);
       return null;
@@ -333,10 +416,18 @@ async function discoverIcon() {
 
   const siteCandidates = [...uniqueByUrl.values()]
     .filter((candidate) => !candidate.explicit)
-    .sort((a, b) => b.area - a.area)
-    .slice(0, 16);
-  const found = (await Promise.all(siteCandidates.map(tryCandidate))).filter(Boolean);
-  found.sort((a, b) => b.size - a.size || b.area - a.area);
+    .sort((a, b) => (b.apple || 0) - (a.apple || 0) || b.area - a.area)
+    .slice(0, maxIconCandidates);
+  const found = [];
+  let nextCandidate = 0;
+  await Promise.all(Array.from({ length: Math.min(4, siteCandidates.length) }, async () => {
+    while (nextCandidate < siteCandidates.length) {
+      const candidate = siteCandidates[nextCandidate++];
+      const icon = await tryCandidate(candidate);
+      if (icon) found.push(icon);
+    }
+  }));
+  found.sort((a, b) => b.size - a.size || (b.apple || 0) - (a.apple || 0) || b.area - a.area);
   if (found.length) {
     const best = found[0];
     console.log(`Using app icon from ${best.url} (${best.dimensions.width}x${best.dimensions.height})`);

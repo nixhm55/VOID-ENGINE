@@ -24,6 +24,10 @@ impl NativeMenu {
         app_menu.append(&PredefinedMenuItem::quit(None))?;
         root.append(&app_menu)?;
 
+        let file_menu = Submenu::new("File", true);
+        file_menu.append(&PredefinedMenuItem::close_window(None))?;
+        root.append(&file_menu)?;
+
         let edit_menu = Submenu::new("Edit", true);
         edit_menu.append(&PredefinedMenuItem::undo(None))?;
         edit_menu.append(&PredefinedMenuItem::redo(None))?;
@@ -35,6 +39,21 @@ impl NativeMenu {
         edit_menu.append(&PredefinedMenuItem::select_all(None))?;
         root.append(&edit_menu)?;
 
+        let view_menu = Submenu::new("View", true);
+        view_menu.append(&PredefinedMenuItem::actual_size(None))?;
+        view_menu.append(&PredefinedMenuItem::zoom_in(None))?;
+        view_menu.append(&PredefinedMenuItem::zoom_out(None))?;
+        view_menu.append(&PredefinedMenuItem::separator())?;
+        view_menu.append(&PredefinedMenuItem::fullscreen(None))?;
+        root.append(&view_menu)?;
+
+        let window_menu = Submenu::new("Window", true);
+        window_menu.append(&PredefinedMenuItem::minimize(None))?;
+        window_menu.append(&PredefinedMenuItem::maximize(None))?;
+        window_menu.append(&PredefinedMenuItem::separator())?;
+        window_menu.append(&PredefinedMenuItem::bring_all_to_front(None))?;
+        root.append(&window_menu)?;
+
         let developer_menu = Submenu::new("Developer", true);
         developer_menu.append(&MenuItem::with_id(
             INSPECT_ELEMENT_ID,
@@ -43,10 +62,22 @@ impl NativeMenu {
             None,
         ))?;
         root.append(&developer_menu)?;
+
+        let help_menu = Submenu::new("Help", true);
+        root.append(&help_menu)?;
+
         root.init_for_nsapp();
+        window_menu.set_as_windows_menu_for_nsapp();
+        help_menu.set_as_help_menu_for_nsapp();
 
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            let _ = proxy.send_event(UserEvent::MenuAction { id: event.id.0 });
+            let id = event.id.0;
+            let user_event = if id == INSPECT_ELEMENT_ID {
+                UserEvent::InspectElement
+            } else {
+                UserEvent::MenuAction { id }
+            };
+            let _ = proxy.send_event(user_event);
         }));
 
         Ok(Self {
@@ -86,7 +117,7 @@ impl NativeMenu {
         self.clear_dynamic()?;
         let mut inserted = 0;
         for (index, submenu) in next_menus.iter().enumerate() {
-            if let Err(error) = self.root.insert(submenu, index + 2) {
+            if let Err(error) = self.root.insert(submenu, index + 5) {
                 for added in next_menus[..inserted].iter().rev() {
                     if let Err(cleanup_error) = self.root.remove(added) {
                         eprintln!(
@@ -128,10 +159,6 @@ impl NativeMenu {
             return None;
         }
         self.dynamic_actions.get(native_id).map(String::as_str)
-    }
-
-    pub(crate) fn is_inspect_element(id: &str) -> bool {
-        id == INSPECT_ELEMENT_ID
     }
 
     fn clear_dynamic(&mut self) -> muda::Result<()> {

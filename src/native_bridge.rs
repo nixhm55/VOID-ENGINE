@@ -62,6 +62,8 @@ pub(crate) enum UserEvent {
         menus: Vec<MenuDefinition>,
     },
     #[cfg(all(target_os = "macos", feature = "max"))]
+    InspectElement,
+    #[cfg(all(target_os = "macos", feature = "max"))]
     MenuAction {
         id: String,
     },
