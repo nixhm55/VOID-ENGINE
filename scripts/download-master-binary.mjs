@@ -6,6 +6,7 @@ const releasePrefix = (process.env.MASTER_BINARY_RELEASE_PREFIX || '').trim();
 const sourceSha = (process.env.MASTER_BINARY_SOURCE_SHA || '').trim().toLowerCase();
 const asset = (process.env.MASTER_BINARY_ASSET || '').trim();
 const output = (process.env.MASTER_BINARY_OUTPUT || '').trim();
+const githubToken = (process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim();
 
 if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || repository.includes('..')) {
   throw new Error('MASTER_BINARY_REPOSITORY must be owner/repository');
@@ -32,12 +33,21 @@ if (releasePrefix) {
     : releasePrefix;
   let lastReason = 'no matching profile release is published yet';
   while (true) {
+    const headers = {
+      'User-Agent': 'VOID-master-binary-downloader/1.0',
+      Accept: 'application/vnd.github+json',
+    };
+    if (githubToken) headers.Authorization = `Bearer ${githubToken}`;
     const releasesResponse = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=100`, {
       signal: AbortSignal.timeout(20_000),
-      headers: { 'User-Agent': 'VOID-master-binary-downloader/1.0', Accept: 'application/vnd.github+json' },
+      headers,
     });
     if (!releasesResponse.ok) {
-      throw new Error(`Could not list profile releases from ${repository}: HTTP ${releasesResponse.status}`);
+      const detail = (await releasesResponse.text()).slice(0, 300);
+      const remaining = releasesResponse.headers.get('x-ratelimit-remaining');
+      const reset = releasesResponse.headers.get('x-ratelimit-reset');
+      const rateLimit = remaining !== null ? ` (API requests remaining: ${remaining}${reset ? `, reset: ${reset}` : ''})` : '';
+      throw new Error(`Could not list profile releases from ${repository}: HTTP ${releasesResponse.status}${rateLimit}${detail ? ` — ${detail}` : ''}`);
     }
     const releases = await releasesResponse.json();
     const release = releases

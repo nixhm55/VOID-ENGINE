@@ -131,6 +131,7 @@ jobs:
         run: node scripts/prepare-branding.mjs
       - name: Download selected macOS master binary
         env:
+          GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.multi_arch && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal') || format('void-engine-{0}-macos-{1}', inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite', runner.arch == 'ARM64' && 'aarch64' || 'x86_64') }}
@@ -202,6 +203,7 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
           APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
@@ -284,6 +286,7 @@ jobs:
         run: node scripts/prepare-branding.mjs
       - name: Download Linux master binary
         env:
+          GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
@@ -442,6 +445,7 @@ jobs:
           key: android-master-apk-v2-${{ inputs.engine_profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'src/android/java/**', 'dist/index.html', 'scripts/prepare-branding.mjs', 'scripts/package-android-apk.sh', '.github/workflows/master-binaries.yml') }}
       - name: Download Android master APK
         env:
+          GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
