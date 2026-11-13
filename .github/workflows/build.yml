@@ -5,7 +5,7 @@ on:
     inputs:
       engine_profile:
         description: >-
-          Choose one profile. Lite is lightweight and has no GPS or Bluetooth. Max adds GPS and the native Bluetooth bridge.
+          If you want to know the differences between Lite and Max, all details are provided in the README.
         type: choice
         required: true
         options:
