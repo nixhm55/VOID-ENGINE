@@ -54,6 +54,9 @@ pub(crate) enum UserEvent {
         uri: String,
         body: String,
     },
+    /// A press on the page drag region; the window is moved on this thread.
+    #[cfg(target_os = "macos")]
+    DragWindow,
     #[cfg(all(
         any(feature = "bluetooth", feature = "filesystem"),
         not(target_os = "android")
@@ -190,6 +193,16 @@ pub(crate) fn configure(
 }
 
 pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>) -> Option<String> {
+    // The drag region carries no data and reaches no resource, so it is handled
+    // before the origin-checked calls below.
+    #[cfg(target_os = "macos")]
+    if let Ok(call) = serde_json::from_str::<IpcCall>(body) {
+        if call.method == "window.drag" {
+            let _ = _proxy.send_event(UserEvent::DragWindow);
+            return None;
+        }
+    }
+
     #[cfg(all(feature = "filesystem", not(target_os = "android")))]
     {
         let call = serde_json::from_str::<IpcCall>(body).ok()?;

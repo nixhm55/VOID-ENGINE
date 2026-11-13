@@ -16,6 +16,8 @@ use std::{
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 #[cfg(not(target_os = "android"))]
 use tao::dpi::LogicalSize;
 #[cfg(target_os = "macos")]
@@ -38,6 +40,7 @@ mod navigation;
 mod open_panel;
 mod permissions;
 mod user_agent;
+mod window_drag;
 
 const BUNDLED_INDEX_HTML: &str = include_str!("../dist/index.html");
 const BUNDLED_VOID_JSON: &str = include_str!("../void.json");
@@ -255,8 +258,11 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
     #[cfg(target_os = "macos")]
     if config.hide_title_bar {
-        // Preserve the native macOS traffic lights while allowing web content
-        // to extend behind the transparent titlebar, as in Pake's overlay mode.
+        // Overlay mode: the page fills the window and the traffic lights float
+        // above it, as in Pake's overlay mode. `with_titlebar_hidden` is not
+        // used here on purpose: tao turns it into a Borderless window, which
+        // drops both the traffic lights and the native drag handle, leaving
+        // nothing to grab. Dragging comes from the page header instead.
         window_builder = window_builder
             .with_titlebar_transparent(true)
             .with_fullsize_content_view(true)
@@ -278,6 +284,11 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         .build(&event_loop)
         .expect("Failed to create window");
 
+    // A window with no title bar to grab still has to stay movable at the
+    // AppKit level, otherwise nothing can ever reposition it.
+    #[cfg(target_os = "macos")]
+    window_drag::allow_movement(&window);
+
     let resolved_url = non_empty(config.url);
 
     let _webview = if let Some(url) = resolved_url {
@@ -285,7 +296,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let target_host = notification_host(&target_url);
         native_bridge::configure(
             with_browser_navigation(
-                user_agent::apply(WebViewBuilder::new())
+                window_drag::apply(user_agent::apply(WebViewBuilder::new()))
                     // Keep camera/microphone requests on the platform's normal
                     // permission path instead of implicitly granting them.
                     .with_permission_handler(permissions::response),
@@ -304,7 +315,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
         let builder = native_bridge::configure(
             with_browser_navigation(
-                user_agent::apply(WebViewBuilder::new())
+                window_drag::apply(user_agent::apply(WebViewBuilder::new()))
                     .with_permission_handler(permissions::response),
             ),
             notification_host(&entry_url),
@@ -345,6 +356,9 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
             .with_url(&entry_url)
             .build(&window)?
     };
+
+    #[cfg(target_os = "macos")]
+    let mut drag_session: Option<window_drag::DragSession> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -410,6 +424,20 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                     .pick_folder()
                     .map(|path| path.to_string_lossy().into_owned());
                 let _ = response.send(selected);
+            }
+            #[cfg(target_os = "macos")]
+            Event::UserEvent(native_bridge::UserEvent::DragWindow) => {
+                drag_session = window_drag::DragSession::begin(&window);
+            }
+            #[cfg(target_os = "macos")]
+            Event::MainEventsCleared => {
+                // Follow the pointer for as long as the button stays down.
+                if drag_session.as_ref().is_some_and(|session| session.released()) {
+                    drag_session = None;
+                } else if let Some(session) = drag_session.as_ref() {
+                    session.update();
+                    *control_flow = ControlFlow::WaitUntil(Instant::now() + window_drag::TICK);
+                }
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
