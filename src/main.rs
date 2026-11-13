@@ -10,14 +10,14 @@ use rfd::FileDialog;
 ))]
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 use std::{
     borrow::Cow,
     env, fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
-#[cfg(target_os = "macos")]
-use std::time::Instant;
 #[cfg(not(target_os = "android"))]
 use tao::dpi::LogicalSize;
 #[cfg(target_os = "macos")]
@@ -33,6 +33,8 @@ use wry::{
 };
 
 mod native_bridge;
+#[cfg(all(target_os = "macos", feature = "max"))]
+mod native_menu;
 #[cfg(target_os = "macos")]
 mod native_notifications;
 mod navigation;
@@ -53,6 +55,17 @@ const VOID_GLYPHS: [[&str; 5]; 4] = [
 
 fn with_browser_navigation(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     navigation::apply(builder)
+}
+
+fn with_developer_tools(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    {
+        builder.with_devtools(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -285,6 +298,12 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         .build(&event_loop)
         .expect("Failed to create window");
 
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    let mut native_menu = native_menu::NativeMenu::new(&title, proxy.clone()).map_err(|error| {
+        eprintln!("Failed to create the macOS menu bar: {error}");
+        io::Error::other(error.to_string())
+    })?;
+
     // A window with no title bar to grab still has to stay movable at the
     // AppKit level, otherwise nothing can ever reposition it.
     #[cfg(target_os = "macos")]
@@ -297,10 +316,12 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         let target_host = notification_host(&target_url);
         native_bridge::configure(
             with_browser_navigation(
-                window_drag::apply(user_agent::apply(WebViewBuilder::new()))
-                    // Keep camera/microphone requests on the platform's normal
-                    // permission path instead of implicitly granting them.
-                    .with_permission_handler(permissions::response),
+                window_drag::apply(user_agent::apply(with_developer_tools(
+                    WebViewBuilder::new(),
+                )))
+                // Keep camera/microphone requests on the platform's normal
+                // permission path instead of implicitly granting them.
+                .with_permission_handler(permissions::response),
             ),
             target_host.clone(),
             target_host,
@@ -316,8 +337,10 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
         let builder = native_bridge::configure(
             with_browser_navigation(
-                window_drag::apply(user_agent::apply(WebViewBuilder::new()))
-                    .with_permission_handler(permissions::response),
+                window_drag::apply(user_agent::apply(with_developer_tools(
+                    WebViewBuilder::new(),
+                )))
+                .with_permission_handler(permissions::response),
             ),
             notification_host(&entry_url),
             None,
@@ -366,8 +389,52 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
         match event {
             Event::UserEvent(native_bridge::UserEvent::Ipc { uri, body }) => {
+                #[cfg(all(target_os = "macos", feature = "max"))]
+                {
+                    let current_origin = webview
+                        .url()
+                        .ok()
+                        .and_then(|url| native_bridge::secure_origin(&url));
+                    native_menu.clear_if_origin_mismatch(current_origin.as_deref());
+                }
                 if let Some(script) = native_bridge::dispatch(&uri, &body, proxy.clone()) {
                     let _ = webview.evaluate_script(&script);
+                }
+            }
+            #[cfg(all(target_os = "macos", feature = "max"))]
+            Event::UserEvent(native_bridge::UserEvent::MenuUpdate { origin, menus }) => {
+                let current_origin = webview
+                    .url()
+                    .ok()
+                    .and_then(|url| native_bridge::secure_origin(&url));
+                if current_origin.as_deref() == Some(origin.as_str()) {
+                    if let Err(error) = native_menu.update(origin, menus) {
+                        eprintln!("Could not update the macOS menu bar: {error}");
+                    }
+                }
+            }
+            #[cfg(all(target_os = "macos", feature = "max"))]
+            Event::UserEvent(native_bridge::UserEvent::MenuAction { id }) => {
+                if native_menu::NativeMenu::is_inspect_element(&id) {
+                    webview.open_devtools();
+                } else {
+                    let current_origin = webview
+                        .url()
+                        .ok()
+                        .and_then(|url| native_bridge::secure_origin(&url));
+                    native_menu.clear_if_origin_mismatch(current_origin.as_deref());
+                    if let Some(action_id) =
+                        native_menu.action_for(&id, current_origin.as_deref())
+                    {
+                        if let Ok(encoded_id) = serde_json::to_string(action_id) {
+                            let script = format!(
+                                "if (typeof window.__voidNativeMenuAction === 'function') window.__voidNativeMenuAction({encoded_id});"
+                            );
+                            if let Err(error) = webview.evaluate_script(&script) {
+                                eprintln!("Could not dispatch native menu action: {error}");
+                            }
+                        }
+                    }
                 }
             }
             #[cfg(all(

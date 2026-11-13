@@ -1,4 +1,6 @@
 use serde::Deserialize;
+#[cfg(target_os = "macos")]
+use std::collections::HashSet;
 #[cfg(all(feature = "filesystem", not(target_os = "android")))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tao::event_loop::EventLoopProxy;
@@ -54,6 +56,15 @@ pub(crate) enum UserEvent {
         uri: String,
         body: String,
     },
+    #[cfg(target_os = "macos")]
+    MenuUpdate {
+        origin: String,
+        menus: Vec<MenuDefinition>,
+    },
+    #[cfg(target_os = "macos")]
+    MenuAction {
+        id: String,
+    },
     /// A press on the page drag region; the window is moved on this thread.
     #[cfg(target_os = "macos")]
     DragWindow,
@@ -94,6 +105,37 @@ struct IpcCall {
     #[serde(default)]
     args: serde_json::Value,
 }
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MenuDefinition {
+    pub(crate) title: String,
+    pub(crate) items: Vec<MenuItemDefinition>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MenuItemDefinition {
+    pub(crate) id: String,
+    pub(crate) label: String,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MenuUpdateIpc {
+    id: String,
+    menus: Vec<MenuDefinition>,
+}
+
+#[cfg(target_os = "macos")]
+const MAX_MENU_UPDATE_BYTES: usize = 16 * 1024;
+#[cfg(target_os = "macos")]
+const MAX_DYNAMIC_MENUS: usize = 5;
+#[cfg(target_os = "macos")]
+const MAX_DYNAMIC_MENU_ITEMS: usize = 30;
 
 #[cfg(all(target_os = "macos", feature = "geolocation"))]
 const GEOLOCATION_SHIM: &str = r#"(() => {
@@ -161,12 +203,17 @@ pub(crate) fn configure(
     #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
     let _ = allowed_folder_host;
     #[cfg(target_os = "macos")]
-    let builder = crate::native_notifications::install(builder, allowed_notification_host.as_deref());
+    let builder =
+        crate::native_notifications::install(builder, allowed_notification_host.as_deref());
     #[cfg(not(target_os = "macos"))]
     let builder = builder;
     #[cfg(all(target_os = "macos", feature = "geolocation"))]
     let builder = builder.with_initialization_script(GEOLOCATION_SHIM);
     #[cfg(not(all(target_os = "macos", feature = "geolocation")))]
+    let builder = builder;
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_initialization_script(include_str!("native_bridge/menu-shim.js"));
+    #[cfg(not(target_os = "macos"))]
     let builder = builder;
     #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
     let builder = builder.with_initialization_script(include_str!("android/bluetooth-shim.js"));
@@ -193,6 +240,31 @@ pub(crate) fn configure(
 }
 
 pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    if let Ok(update) = serde_json::from_str::<MenuUpdateIpc>(body) {
+        if update.id == "void-menu" {
+            if body.len() > MAX_MENU_UPDATE_BYTES {
+                eprintln!("Rejected native menu update: payload exceeds 16 KiB");
+                return None;
+            }
+            let Some(origin) = secure_origin(uri) else {
+                eprintln!("Rejected native menu update from a non-secure origin");
+                return None;
+            };
+            if let Err(error) = validate_menu_update(&update.menus) {
+                eprintln!("Rejected native menu update: {error}");
+                return None;
+            }
+            if let Err(error) = _proxy.send_event(UserEvent::MenuUpdate {
+                origin,
+                menus: update.menus,
+            }) {
+                eprintln!("Could not queue native menu update: {error}");
+            }
+            return None;
+        }
+    }
+
     // The drag region carries no data and reaches no resource, so it is handled
     // before the origin-checked calls below.
     #[cfg(target_os = "macos")]
@@ -327,13 +399,91 @@ fn process_call(uri: &str, body: &str) -> Option<String> {
 }
 
 #[cfg(all(
-    any(feature = "bluetooth", feature = "filesystem"),
-    not(target_os = "android")
+    not(target_os = "android"),
+    any(feature = "bluetooth", feature = "filesystem", target_os = "macos")
 ))]
 pub(crate) fn secure_origin(uri: &str) -> Option<String> {
     uri.parse::<wry::http::Uri>()
         .ok()
         .and_then(|parsed| secure_origin_from_uri(&parsed))
+}
+
+#[cfg(target_os = "macos")]
+fn validate_menu_update(menus: &[MenuDefinition]) -> Result<(), &'static str> {
+    if menus.len() > MAX_DYNAMIC_MENUS {
+        return Err("at most five dynamic menus are allowed");
+    }
+
+    let mut ids = HashSet::new();
+    for menu in menus {
+        if menu.title.trim().is_empty()
+            || menu.title.chars().count() > 40
+            || menu.title.chars().any(char::is_control)
+        {
+            return Err("menu titles must be 1-40 printable characters");
+        }
+        if menu.items.is_empty() || menu.items.len() > MAX_DYNAMIC_MENU_ITEMS {
+            return Err("each dynamic menu must contain 1-30 items");
+        }
+        for item in &menu.items {
+            if item.id.is_empty()
+                || item.id.len() > 64
+                || !item
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+                || !ids.insert(item.id.as_str())
+            {
+                return Err(
+                    "item IDs must be unique and use only letters, digits, '.', '_', ':' or '-'",
+                );
+            }
+            if item.label.trim().is_empty()
+                || item.label.chars().count() > 120
+                || item.label.chars().any(char::is_control)
+            {
+                return Err("item labels must be 1-120 printable characters");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod menu_tests {
+    use super::{validate_menu_update, MenuDefinition, MenuItemDefinition};
+
+    fn definition(items: &[(&str, &str)]) -> Vec<MenuDefinition> {
+        vec![MenuDefinition {
+            title: "Chats".to_string(),
+            items: items
+                .iter()
+                .map(|(id, label)| MenuItemDefinition {
+                    id: (*id).to_string(),
+                    label: (*label).to_string(),
+                })
+                .collect(),
+        }]
+    }
+
+    #[test]
+    fn accepts_valid_menu_definitions() {
+        assert!(validate_menu_update(&definition(&[("chat-1", "Recent chat")])).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_action_ids() {
+        assert!(validate_menu_update(&definition(&[
+            ("same", "First chat"),
+            ("same", "Second chat"),
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_control_characters_in_labels() {
+        assert!(validate_menu_update(&definition(&[("chat-1", "Chat\ninjected")])).is_err());
+    }
 }
 
 fn secure_origin_from_uri(uri: &wry::http::Uri) -> Option<String> {

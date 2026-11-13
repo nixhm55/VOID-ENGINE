@@ -49,7 +49,7 @@ const bundleId = `com.void.${appSlug}`;
 const info = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n` +
   `<key>CFBundleExecutable</key><string>void</string>\n<key>CFBundleIdentifier</key><string>${xml(bundleId)}</string>\n` +
   `<key>CFBundleName</key><string>${xml(appName)}</string>\n<key>CFBundleDisplayName</key><string>${xml(appName)}</string>\n` +
-  '<key>CFBundleIconFile</key><string>AppIcon</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n' +
+  '<key>CFBundleIconFile</key><string>AppIcon.icns</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n' +
   `<key>CFBundleShortVersionString</key><string>${xml(version)}</string>\n<key>CFBundleVersion</key><string>${xml(version)}</string>\n` +
   '<key>NSHighResolutionCapable</key><true/>\n' +
   '<key>NSCameraUsageDescription</key><string>VOID needs camera access for websites you choose to use.</string>\n' +

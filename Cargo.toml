@@ -13,7 +13,7 @@ lite = []
 geolocation = []
 bluetooth = ["dep:btleplug", "dep:tokio", "dep:futures-util", "dep:rfd", "dep:uuid"]
 filesystem = ["dep:rfd", "dep:uuid"]
-max = ["lite", "geolocation", "bluetooth", "filesystem"]
+max = ["lite", "geolocation", "bluetooth", "filesystem", "dep:muda", "wry/devtools"]
 
 [package.metadata.bundle]
 name = "VOID"
@@ -61,6 +61,7 @@ futures-util = { version = "0.3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21.2", optional = true }
 rfd = { version = "0.17.2", default-features = false, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

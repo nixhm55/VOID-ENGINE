@@ -240,12 +240,12 @@ unsafe fn nsstring(value: &str) -> Object {
     if allocated.is_null() {
         return ptr::null_mut();
     }
-    send_object_arg(
+    let initialized = send_object_arg(
         allocated,
         selector(c"initWithUTF8String:"),
         text.as_ptr() as Object,
     );
-    allocated
+    initialized
 }
 
 unsafe fn nsstring_to_string(value: Object) -> String {
@@ -271,10 +271,10 @@ unsafe fn send_object(receiver: Object, selector: Selector) -> Object {
     function(receiver, selector)
 }
 
-unsafe fn send_object_arg(receiver: Object, selector: Selector, value: Object) {
-    let function: unsafe extern "C" fn(Object, Selector, Object) =
+unsafe fn send_object_arg(receiver: Object, selector: Selector, value: Object) -> Object {
+    let function: unsafe extern "C" fn(Object, Selector, Object) -> Object =
         mem::transmute(objc_msgSend as *const ());
-    function(receiver, selector, value);
+    function(receiver, selector, value)
 }
 
 unsafe fn send_void(receiver: Object, selector: Selector) {

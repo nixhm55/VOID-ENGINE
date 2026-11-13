@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import zlib from 'node:zlib';
 
 const outputDir = 'branding';
@@ -147,6 +149,39 @@ function icoToPng(bytes) {
   return null;
 }
 
+function svgToPng(bytes) {
+  if (process.platform !== 'darwin') return null;
+  const svg = bytes.toString('utf8');
+  if (!/^\s*(?:<\?xml\b[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg\b/i.test(svg)
+      || /<!DOCTYPE|<!ENTITY|<\s*(?:script|foreignObject|iframe|object|embed)\b/i.test(svg)
+      || /\b(?:href|src)\s*=\s*["']\s*(?!#)[^"']*["']/i.test(svg)
+      || /\b(?:on[a-z0-9_-]+)\s*=/i.test(svg)
+      || /@import\b/i.test(svg)
+      || /url\(\s*(?!#)[^)]+\)/i.test(svg)) return null;
+
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'void-svg-icon-'));
+  const source = path.join(temporaryDirectory, 'icon.svg');
+  const output = path.join(temporaryDirectory, 'icon.png');
+  try {
+    fs.writeFileSync(source, bytes);
+    const result = spawnSync('sips', ['-s', 'format', 'png', source, '--out', output], {
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    if (result.error || result.status !== 0) {
+      console.warn(`Could not rasterize SVG app icon: ${result.error?.message || result.stderr}`);
+      return null;
+    }
+    const png = fs.readFileSync(output);
+    return pngDimensions(png) ? png : null;
+  } catch (error) {
+    console.warn(`Could not rasterize SVG app icon: ${error.message}`);
+    return null;
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
 async function fetchBytes(url) {
   const response = await fetch(url, {
     redirect: 'follow',
@@ -279,7 +314,7 @@ async function discoverIcon() {
   const tryCandidate = async (candidate) => {
     try {
       const bytes = await fetchBytes(candidate.url);
-      const png = pngDimensions(bytes) ? bytes : icoToPng(bytes);
+      const png = pngDimensions(bytes) ? bytes : (icoToPng(bytes) || svgToPng(bytes));
       const dimensions = png && pngDimensions(png);
       return dimensions ? { ...candidate, png, dimensions, size: Math.min(dimensions.width, dimensions.height) } : null;
     } catch (error) {
