@@ -26,28 +26,56 @@
     else task.resolve(reply.value);
   };
 
+  function toBase64(bytes) {
+    let binary = '';
+    const step = 0x8000;
+    for (let index = 0; index < bytes.length; index += step) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(index, index + step));
+    }
+    return btoa(binary);
+  }
+
+  // Writable streams buffer in the page and submit once on close, so a native
+  // approval covers the whole file instead of every chunk.
+  async function encodeChunks(chunks) {
+    const parts = chunks.map((chunk) => {
+      if (chunk && typeof chunk === 'object' && 'data' in chunk) return chunk.data;
+      return chunk;
+    });
+    const blob = new Blob(parts);
+    return toBase64(new Uint8Array(await blob.arrayBuffer()));
+  }
+
   class VoidFileSystemHandle {
-    constructor(id, path, name, kind) {
+    constructor(id, path, name, kind, mode) {
       this._id = id;
       this._path = path;
       this.name = name;
       this.kind = kind;
+      this._mode = mode === 'readwrite' ? 'readwrite' : 'read';
     }
     async isSameEntry(other) {
       return other instanceof VoidFileSystemHandle && other._id === this._id &&
         JSON.stringify(other._path) === JSON.stringify(this._path);
     }
     async queryPermission(descriptor = {}) {
-      return descriptor.mode === 'readwrite' ? 'denied' : 'granted';
+      return descriptor.mode === 'readwrite' && this._mode !== 'readwrite' ? 'prompt' : 'granted';
     }
     async requestPermission(descriptor = {}) {
-      return this.queryPermission(descriptor);
+      if (descriptor.mode !== 'readwrite' || this._mode === 'readwrite') return 'granted';
+      // Layer 1 runs again before a read-only grant is widened.
+      const grant = await call('filesystem.requestWriteAccess', { id: this._id });
+      if (grant && grant.mode === 'readwrite') {
+        this._mode = 'readwrite';
+        return 'granted';
+      }
+      return 'denied';
     }
     get [Symbol.toStringTag]() { return 'FileSystemHandle'; }
   }
 
   class VoidFileSystemFileHandle extends VoidFileSystemHandle {
-    constructor(id, path, name) { super(id, path, name, 'file'); }
+    constructor(id, path, name, mode) { super(id, path, name, 'file', mode); }
     async getFile() {
       const result = await call('filesystem.readFile', { id: this._id, path: this._path });
       const binary = atob(result.bytes);
@@ -59,38 +87,74 @@
       });
     }
     async createWritable() {
-      throw makeError('Writing through this folder connection is not supported.', 'NotSupportedError');
+      const id = this._id;
+      const path = this._path;
+      const chunks = [];
+      let closed = false;
+      const push = (data) => {
+        if (closed) throw makeError('The writer is closed.', 'InvalidStateError');
+        chunks.push(data);
+      };
+      return {
+        async write(data) { push(data); },
+        async truncate(size = 0) {
+          if (Number(size) !== 0) {
+            throw makeError('Only truncating to zero bytes is supported.', 'NotSupportedError');
+          }
+          chunks.length = 0;
+        },
+        async seek() {
+          throw makeError('Seeking is not supported by this folder connection.', 'NotSupportedError');
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          const bytes = await encodeChunks(chunks);
+          await call('filesystem.writeFile', { id, path, bytes });
+        },
+        async abort() {
+          closed = true;
+          chunks.length = 0;
+        },
+      };
     }
     get [Symbol.toStringTag]() { return 'FileSystemFileHandle'; }
   }
 
   class VoidFileSystemDirectoryHandle extends VoidFileSystemHandle {
-    constructor(id, path, name) { super(id, path, name, 'directory'); }
+    constructor(id, path, name, mode) { super(id, path, name, 'directory', mode); }
     async _entries() {
       return call('filesystem.listDirectory', { id: this._id, path: this._path });
     }
     async getDirectoryHandle(name, options = {}) {
       validateName(name);
-      if (options.create) throw makeError('Creating folders through this connection is not supported.', 'NotSupportedError');
+      if (options.create) {
+        await call('filesystem.createDirectory', { id: this._id, path: [...this._path, name] });
+        return new VoidFileSystemDirectoryHandle(this._id, [...this._path, name], name, this._mode);
+      }
       const entry = (await this._entries()).find((item) => item.name === name);
       if (!entry) throw makeError(`Folder not found: ${name}`, 'NotFoundError');
       if (entry.kind !== 'directory') throw makeError(`${name} is not a folder.`, 'TypeMismatchError');
-      return new VoidFileSystemDirectoryHandle(this._id, [...this._path, name], name);
+      return new VoidFileSystemDirectoryHandle(this._id, [...this._path, name], name, this._mode);
     }
     async getFileHandle(name, options = {}) {
       validateName(name);
-      if (options.create) throw makeError('Creating files through this connection is not supported.', 'NotSupportedError');
+      // With create the file is materialised on the first write, which keeps
+      // one approval per change instead of one per lookup.
+      if (options.create) {
+        return new VoidFileSystemFileHandle(this._id, [...this._path, name], name, this._mode);
+      }
       const entry = (await this._entries()).find((item) => item.name === name);
       if (!entry) throw makeError(`File not found: ${name}`, 'NotFoundError');
       if (entry.kind !== 'file') throw makeError(`${name} is not a file.`, 'TypeMismatchError');
-      return new VoidFileSystemFileHandle(this._id, [...this._path, name], name);
+      return new VoidFileSystemFileHandle(this._id, [...this._path, name], name, this._mode);
     }
     async *entries() {
       for (const entry of await this._entries()) {
         const path = [...this._path, entry.name];
         const handle = entry.kind === 'directory'
-          ? new VoidFileSystemDirectoryHandle(this._id, path, entry.name)
-          : new VoidFileSystemFileHandle(this._id, path, entry.name);
+          ? new VoidFileSystemDirectoryHandle(this._id, path, entry.name, this._mode)
+          : new VoidFileSystemFileHandle(this._id, path, entry.name, this._mode);
         yield [entry.name, handle];
       }
     }
@@ -101,8 +165,15 @@
       for await (const [, handle] of this.entries()) yield handle;
     }
     [Symbol.asyncIterator]() { return this.entries(); }
-    async removeEntry() {
-      throw makeError('Removing entries through this folder connection is not supported.', 'NotSupportedError');
+    async removeEntry(name, options = {}) {
+      validateName(name);
+      if (options.recursive) {
+        throw makeError(
+          'Recursive removal is not supported through this folder connection.',
+          'NotSupportedError'
+        );
+      }
+      await call('filesystem.removeEntry', { id: this._id, path: [...this._path, name] });
     }
     async resolve(possibleDescendant) {
       if (!(possibleDescendant instanceof VoidFileSystemHandle) || possibleDescendant._id !== this._id) return null;
@@ -130,14 +201,17 @@
   }
 
   async function showDirectoryPicker(options = {}) {
-    if (options.mode && options.mode !== 'read') {
-      throw makeError('This folder connection supports read-only access.', 'NotSupportedError');
-    }
     if (navigator.userActivation && !navigator.userActivation.isActive) {
       throw makeError('Choose a folder from a user action.', 'SecurityError');
     }
-    const selected = await call('filesystem.pickDirectory');
-    return new VoidFileSystemDirectoryHandle(selected.id, [], selected.name);
+    const mode = options.mode === 'readwrite' ? 'readwrite' : 'read';
+    const selected = await call('filesystem.pickDirectory', { mode });
+    return new VoidFileSystemDirectoryHandle(
+      selected.id,
+      [],
+      selected.name,
+      selected.mode || mode
+    );
   }
 
   Object.defineProperty(window, 'showDirectoryPicker', {

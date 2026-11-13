@@ -2,6 +2,8 @@ use serde::Deserialize;
 use tao::event_loop::EventLoopProxy;
 use wry::{http::Request, WebViewBuilder};
 
+#[cfg(all(target_os = "macos", feature = "filesystem"))]
+mod desktop_auth;
 #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
 mod desktop_bluetooth;
 #[cfg(all(feature = "filesystem", not(target_os = "android")))]
@@ -13,17 +15,29 @@ pub(crate) enum UserEvent {
         uri: String,
         body: String,
     },
-    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    #[cfg(all(
+        any(feature = "bluetooth", feature = "filesystem"),
+        not(target_os = "android")
+    ))]
     Script {
         origin: String,
         source: String,
     },
-    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    #[cfg(all(
+        any(feature = "bluetooth", feature = "filesystem"),
+        not(target_os = "android")
+    ))]
     Prompt {
         title: String,
         description: String,
         buttons: [String; 3],
         response: std::sync::mpsc::Sender<String>,
+    },
+    /// The folder picker runs on the UI thread; AppKit must not be touched from
+    /// the filesystem worker.
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    PickFolder {
+        response: std::sync::mpsc::Sender<Option<String>>,
     },
 }
 
@@ -145,11 +159,24 @@ pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>)
                     )),
                 ));
             };
-            return Some(reply_script(
-                "__voidFileSystemReply",
-                &call.id,
-                filesystem::handle(&origin, &call.method, &call.args),
-            ));
+            let id = call.id;
+            let method = call.method;
+            let args = call.args;
+            let worker_proxy = _proxy.clone();
+            std::thread::Builder::new()
+                .name("void-filesystem-ipc".into())
+                .spawn(move || {
+                    // Layer 1 authentication and Layer 3 approval prompts block
+                    // this worker, never the UI event loop.
+                    let result = filesystem::handle(&origin, &method, &args, &worker_proxy);
+                    let script = reply_script("__voidFileSystemReply", &id, result);
+                    let _ = worker_proxy.send_event(UserEvent::Script {
+                        origin,
+                        source: script,
+                    });
+                })
+                .ok()?;
+            return None;
         }
     }
 

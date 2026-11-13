@@ -1,5 +1,13 @@
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+#[cfg(all(
+    feature = "filesystem",
+    not(any(target_os = "android", target_os = "macos"))
+))]
+use rfd::FileDialog;
+#[cfg(all(
+    any(feature = "bluetooth", feature = "filesystem"),
+    not(target_os = "android")
+))]
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -26,6 +34,8 @@ mod native_bridge;
 #[cfg(target_os = "macos")]
 mod native_notifications;
 mod navigation;
+#[cfg(all(target_os = "macos", feature = "filesystem"))]
+mod open_panel;
 mod permissions;
 mod user_agent;
 
@@ -342,7 +352,10 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                     let _ = _webview.evaluate_script(&script);
                 }
             }
-            #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+            #[cfg(all(
+                any(feature = "bluetooth", feature = "filesystem"),
+                not(target_os = "android")
+            ))]
             Event::UserEvent(native_bridge::UserEvent::Script { origin, source }) => {
                 let current_origin = _webview
                     .url()
@@ -352,7 +365,10 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                     let _ = _webview.evaluate_script(&source);
                 }
             }
-            #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+            #[cfg(all(
+                any(feature = "bluetooth", feature = "filesystem"),
+                not(target_os = "android")
+            ))]
             Event::UserEvent(native_bridge::UserEvent::Prompt {
                 title,
                 description,
@@ -376,6 +392,20 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                     MessageDialogResult::Ok => buttons[0].clone(),
                     _ => String::new(),
                 };
+                let _ = response.send(selected);
+            }
+            #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+            Event::UserEvent(native_bridge::UserEvent::PickFolder { response }) => {
+                // macOS goes through NSOpenPanel so a sandboxed build can use
+                // Powerbox to obtain the folder extension.
+                #[cfg(target_os = "macos")]
+                let selected =
+                    open_panel::pick_folder("Choose a folder to share with this website");
+                #[cfg(not(target_os = "macos"))]
+                let selected = FileDialog::new()
+                    .set_title("Choose a folder to share with this website")
+                    .pick_folder()
+                    .map(|path| path.to_string_lossy().into_owned());
                 let _ = response.send(selected);
             }
             Event::WindowEvent {

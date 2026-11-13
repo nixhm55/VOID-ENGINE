@@ -7,6 +7,7 @@ const appSlug = (process.env.APP_SLUG || 'void').trim();
 const version = (process.env.APP_VERSION || '1.0.0').trim();
 const engineProfile = (process.env.ENGINE_PROFILE || 'lite').trim();
 const binary = process.env.MASTER_BINARY_PATH || 'target/release/void';
+const entitlements = 'macos/void.entitlements';
 const outputDir = 'output';
 const staging = 'dmg_staging';
 const appPath = path.join(staging, `${appSlug}.app`);
@@ -61,7 +62,18 @@ const info = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-/
 await fs.writeFile(path.join(contents, 'Info.plist'), info);
 await fs.writeFile(path.join(contents, 'PkgInfo'), 'APPL????');
 await fs.mkdir(outputDir, { recursive: true });
-run('codesign', ['--force', '--deep', '--sign', '-', appPath]);
+// The App Sandbox only takes effect when the entitlements travel with the
+// signature; ad-hoc signing is enough for a locally distributed bundle.
+await fs.access(entitlements);
+run('codesign', [
+  '--force',
+  '--deep',
+  '--sign',
+  '-',
+  '--entitlements',
+  entitlements,
+  appPath,
+]);
 await fs.symlink('/Applications', path.join(staging, 'Applications'));
 run('hdiutil', ['create', '-volname', appName, '-srcfolder', staging, '-ov', '-format', 'UDZO', path.join(outputDir, `${appSlug}.dmg`)]);
 console.log(`Packaged ${appName} as ${path.join(outputDir, `${appSlug}.dmg`)}`);
