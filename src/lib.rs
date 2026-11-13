@@ -62,13 +62,13 @@ fn is_remote_url(target: &str) -> bool {
 
 fn mime_type_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
-        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("html" | "htm") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
-        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
@@ -307,6 +307,17 @@ pub unsafe extern "C" fn ANativeActivity_onCreate(
     }
 }
 
+/// Opens the VOID window and runs its event loop.
+///
+/// # Errors
+///
+/// Returns the webview build error when the platform refuses to create the
+/// window or the webview.
+///
+/// # Panics
+///
+/// Panics when the platform cannot create the native window at all, which no
+/// caller can recover from.
 pub fn start_app(cli_url: Option<String>) -> wry::Result<()> {
     let config = load_config();
     let title = config.title.unwrap_or_else(|| "VOID".to_string());

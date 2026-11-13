@@ -2,7 +2,7 @@
 use wry::NewWindowResponse;
 use wry::WebViewBuilder;
 
-pub(crate) fn apply<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
+pub(crate) fn apply(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     #[cfg(target_os = "android")]
     {
         builder

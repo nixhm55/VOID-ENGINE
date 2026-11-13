@@ -51,7 +51,7 @@ const VOID_GLYPHS: [[&str; 5]; 4] = [
     ["#####  ", "##   ##", "##   ##", "##   ##", "#####  "],
 ];
 
-fn with_browser_navigation<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
+fn with_browser_navigation(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     navigation::apply(builder)
 }
 
@@ -189,13 +189,13 @@ fn notification_host(url: &str) -> Option<String> {
 
 fn mime_type_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
-        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("html" | "htm") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
-        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
@@ -243,6 +243,7 @@ pub extern "C" fn init_void_android() {
     wry::android_binding!(com_void, void_engine);
 }
 
+#[allow(clippy::too_many_lines)]
 fn start_app(config: VoidConfig) -> wry::Result<()> {
     let title = non_empty(config.title).unwrap_or_else(|| "VOID".to_string());
 
@@ -291,7 +292,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
 
     let resolved_url = non_empty(config.url);
 
-    let _webview = if let Some(url) = resolved_url {
+    let webview = if let Some(url) = resolved_url {
         let target_url = normalize_url(&url);
         let target_host = notification_host(&target_url);
         native_bridge::configure(
@@ -366,7 +367,7 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
         match event {
             Event::UserEvent(native_bridge::UserEvent::Ipc { uri, body }) => {
                 if let Some(script) = native_bridge::dispatch(&uri, &body, proxy.clone()) {
-                    let _ = _webview.evaluate_script(&script);
+                    let _ = webview.evaluate_script(&script);
                 }
             }
             #[cfg(all(
@@ -374,12 +375,12 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
                 not(target_os = "android")
             ))]
             Event::UserEvent(native_bridge::UserEvent::Script { origin, source }) => {
-                let current_origin = _webview
+                let current_origin = webview
                     .url()
                     .ok()
                     .and_then(|url| native_bridge::secure_origin(&url));
                 if current_origin.as_deref() == Some(origin.as_str()) {
-                    let _ = _webview.evaluate_script(&source);
+                    let _ = webview.evaluate_script(&source);
                 }
             }
             #[cfg(all(
@@ -432,13 +433,19 @@ fn start_app(config: VoidConfig) -> wry::Result<()> {
             #[cfg(target_os = "macos")]
             Event::MainEventsCleared => {
                 // Follow the pointer for as long as the button stays down.
-                if drag_session.as_ref().is_some_and(|session| session.released()) {
+                if drag_session.is_some() && window_drag::primary_button_released() {
                     drag_session = None;
-                } else if let Some(session) = drag_session.as_ref() {
+                } else if let Some(session) = drag_session.as_mut() {
                     session.update();
                     *control_flow = ControlFlow::WaitUntil(Instant::now() + window_drag::TICK);
                 }
             }
+            // Never keep a raw NSWindow pointer past the window it belongs to.
+            #[cfg(target_os = "macos")]
+            Event::WindowEvent {
+                event: WindowEvent::Destroyed,
+                ..
+            } => drag_session = None,
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
@@ -550,6 +557,8 @@ fn initialize_config() -> io::Result<()> {
 }
 
 fn terminal_banner() -> String {
+    use std::fmt::Write as _;
+
     let repo = "https://github.com/nixhm55/VOID-ENGINE";
     let tagline = "Turn websites into desktop apps with Rust.";
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
@@ -576,14 +585,14 @@ fn terminal_banner() -> String {
         if row == 1 {
             banner.push_str("   ");
             if color {
-                banner.push_str(&format!("\x1b[38;5;208m{repo}\x1b[0m"));
+                let _ = write!(banner, "\x1b[38;5;208m{repo}\x1b[0m");
             } else {
                 banner.push_str(repo);
             }
         } else if row == 2 {
             banner.push_str("   ");
             if color {
-                banner.push_str(&format!("\x1b[92m{tagline}\x1b[0m"));
+                let _ = write!(banner, "\x1b[92m{tagline}\x1b[0m");
             } else {
                 banner.push_str(tagline);
             }

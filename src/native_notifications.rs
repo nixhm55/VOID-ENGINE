@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::{process::Command, thread};
 use wry::{http::Request, WebViewBuilder};
 
-const NOTIFICATION_SHIM: &str = r#"(() => {
+const NOTIFICATION_SHIM: &str = r"(() => {
   if (!window.ipc || typeof window.ipc.postMessage !== 'function') return;
   class VoidNotification extends EventTarget {
     constructor(title, options = {}) {
@@ -22,7 +22,7 @@ const NOTIFICATION_SHIM: &str = r#"(() => {
     close() {}
   }
   window.Notification = VoidNotification;
-})();"#;
+})();";
 
 #[derive(Deserialize)]
 struct NotificationMessage {
@@ -31,7 +31,10 @@ struct NotificationMessage {
     body: String,
 }
 
-pub(crate) fn install(builder: WebViewBuilder, allowed_host: Option<String>) -> WebViewBuilder {
+pub(crate) fn install<'a>(
+    builder: WebViewBuilder<'a>,
+    allowed_host: Option<&str>,
+) -> WebViewBuilder<'a> {
     if allowed_host.is_none() {
         return builder;
     }
@@ -69,9 +72,7 @@ fn limit_text(value: &str, max_chars: usize) -> String {
         .filter(|character| !character.is_control() || *character == '\n' || *character == '\t')
         .take(max_chars)
         .collect::<String>()
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .replace('\t', " ")
+        .replace(['\n', '\r', '\t'], " ")
 }
 
 fn show_notification(title: &str, body: &str) {

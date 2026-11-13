@@ -1,7 +1,7 @@
 //! Frameless window dragging.
 //!
 //! A frameless macOS window keeps its traffic lights and its content view, but
-//! the webview covers the only area AppKit would otherwise treat as a title
+//! the webview covers the only area `AppKit` would otherwise treat as a title
 //! bar, so a press inside the page never becomes a window drag. The preload
 //! marks the page header as a drag region and reports mouse-down over it; this
 //! module turns that report into a real window drag.
@@ -9,7 +9,7 @@
 //! `wry`/`tao` cannot do it on their own here: `Window::drag_window` on macOS
 //! forwards `NSApp.currentEvent` to `performWindowDragWithEvent:`, and that
 //! event is gone by the time an asynchronous IPC message is handled. The drag
-//! is therefore driven from the event loop with AppKit mouse queries, which
+//! is therefore driven from the event loop with `AppKit` mouse queries, which
 //! keeps it smooth and independent of the IPC round trip.
 
 #[cfg(target_os = "macos")]
@@ -27,7 +27,7 @@ const PRELOAD: &str = include_str!("window_drag.js");
 
 /// Installs the drag-region preload. Only the macOS build needs it: Chromium
 /// webviews already honour the injected `app-region` CSS on their own.
-pub(crate) fn apply<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
+pub(crate) fn apply(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     #[cfg(target_os = "macos")]
     {
         builder.with_initialization_script(PRELOAD)
@@ -38,7 +38,7 @@ pub(crate) fn apply<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
     }
 }
 
-/// Lets AppKit move the window. `tao` 0.37 exposes no `Window::set_movable`,
+/// Lets `AppKit` move the window. `tao` 0.37 exposes no `Window::set_movable`,
 /// so the `NSWindow` property is applied directly at startup.
 #[cfg(target_os = "macos")]
 pub(crate) fn allow_movement(window: &Window) {
@@ -54,6 +54,8 @@ pub(crate) struct DragSession {
     ns_window: appkit::Object,
     start_mouse: appkit::NSPoint,
     start_origin: appkit::NSPoint,
+    /// Last origin pushed to `AppKit`, so a still pointer costs no window calls.
+    applied: appkit::NSPoint,
 }
 
 #[cfg(target_os = "macos")]
@@ -68,34 +70,44 @@ impl DragSession {
         if ns_window.is_null() {
             return None;
         }
+        let start_origin = appkit::frame_origin(ns_window);
         Some(Self {
             ns_window,
             start_mouse: appkit::mouse_location(),
-            start_origin: appkit::frame_origin(ns_window),
+            start_origin,
+            applied: start_origin,
         })
     }
 
     /// Moves the window by the mouse delta since the press. Both the pointer
     /// and the window frame are in screen points, so no scaling is involved.
-    pub(crate) fn update(&self) {
+    pub(crate) fn update(&mut self) {
         let mouse = appkit::mouse_location();
-        appkit::set_frame_origin(
-            self.ns_window,
-            appkit::NSPoint {
-                x: self.start_origin.x + (mouse.x - self.start_mouse.x),
-                y: self.start_origin.y + (mouse.y - self.start_mouse.y),
-            },
-        );
-    }
-
-    pub(crate) fn released(&self) -> bool {
-        !appkit::primary_button_down()
+        let origin = appkit::NSPoint {
+            x: self.start_origin.x + (mouse.x - self.start_mouse.x),
+            y: self.start_origin.y + (mouse.y - self.start_mouse.y),
+        };
+        // Exact comparison is intentional: the origin is recomputed from the
+        // same mouse reading, so an untouched pointer yields bit-identical values.
+        if origin.x.to_bits() == self.applied.x.to_bits()
+            && origin.y.to_bits() == self.applied.y.to_bits()
+        {
+            return;
+        }
+        appkit::set_frame_origin(self.ns_window, origin);
+        self.applied = origin;
     }
 }
 
-/// Minimal AppKit access. `tao` only exposes setters for some window
+/// Reports whether the primary button that started a drag has been released.
+#[cfg(target_os = "macos")]
+pub(crate) fn primary_button_released() -> bool {
+    !appkit::primary_button_down()
+}
+
+/// Minimal `AppKit` access. `tao` only exposes setters for some window
 /// properties, so the missing ones go through `objc_msgSend` directly, the
-/// same way the location bridge in `native_bridge.rs` calls CoreLocation.
+/// same way the location bridge in `native_bridge.rs` calls `CoreLocation`.
 #[cfg(target_os = "macos")]
 mod appkit {
     use std::{

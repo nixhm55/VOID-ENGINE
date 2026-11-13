@@ -51,7 +51,7 @@ mod preload {
     use super::current;
     use std::sync::OnceLock;
 
-    const TEMPLATE: &str = r#"(() => {
+    const TEMPLATE: &str = r"(() => {
   if (window.__voidDesktopIdentityInstalled) return;
   window.__voidDesktopIdentityInstalled = true;
 
@@ -115,7 +115,7 @@ mod preload {
     writable: false,
     value: Object.freeze(nativeApi)
   });
-})();"#;
+})();";
 
     pub(super) fn script() -> &'static str {
         static SCRIPT: OnceLock<String> = OnceLock::new();
@@ -128,7 +128,7 @@ mod preload {
     }
 }
 
-pub(crate) fn apply<'a>(builder: WebViewBuilder<'a>) -> WebViewBuilder<'a> {
+pub(crate) fn apply(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     let builder = builder.with_user_agent(current());
     #[cfg(target_os = "macos")]
     let builder = builder.with_initialization_script(preload::script());

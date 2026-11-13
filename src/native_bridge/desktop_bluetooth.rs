@@ -497,10 +497,15 @@ async fn start_notifications(
             }
         }
     });
-    notifications()
+    let previous = notifications()
         .lock()
         .map_err(lock_error)?
         .insert(notification_key(&device_id, &characteristic), task);
+    if let Some(previous) = previous {
+        // Dropping a JoinHandle detaches its task, so re-subscribing to the same
+        // characteristic would leave the old stream forwarding duplicates.
+        previous.abort();
+    }
     Ok(Value::Null)
 }
 

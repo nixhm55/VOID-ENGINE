@@ -161,7 +161,7 @@ pub(crate) fn configure(
     #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
     let _ = allowed_folder_host;
     #[cfg(target_os = "macos")]
-    let builder = crate::native_notifications::install(builder, allowed_notification_host.clone());
+    let builder = crate::native_notifications::install(builder, allowed_notification_host.as_deref());
     #[cfg(not(target_os = "macos"))]
     let builder = builder;
     #[cfg(all(target_os = "macos", feature = "geolocation"))]
@@ -339,12 +339,10 @@ pub(crate) fn secure_origin(uri: &str) -> Option<String> {
 fn secure_origin_from_uri(uri: &wry::http::Uri) -> Option<String> {
     let scheme = uri.scheme_str()?;
     let host = uri.host()?;
-    let allowed = match (scheme, host) {
-        ("https", _) => true,
-        ("http", "localhost" | "127.0.0.1" | "[::1]") => true,
-        ("void", "localhost") => true,
-        _ => false,
-    };
+    let allowed = matches!(
+        (scheme, host),
+        ("https", _) | ("http", "localhost" | "127.0.0.1" | "[::1]") | ("void", "localhost")
+    );
     if !allowed {
         return None;
     }
