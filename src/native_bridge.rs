@@ -4,6 +4,8 @@ use wry::{http::Request, WebViewBuilder};
 
 #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
 mod desktop_bluetooth;
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+mod filesystem;
 
 #[derive(Debug)]
 pub(crate) enum UserEvent {
@@ -29,7 +31,10 @@ pub(crate) enum UserEvent {
 struct IpcCall {
     id: String,
     method: String,
-    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    #[cfg(all(
+        any(feature = "bluetooth", feature = "filesystem"),
+        not(target_os = "android")
+    ))]
     #[serde(default)]
     args: serde_json::Value,
 }
@@ -106,6 +111,10 @@ pub(crate) fn configure(
     let builder = builder.with_initialization_script(include_str!("android/bluetooth-shim.js"));
     #[cfg(not(all(feature = "bluetooth", not(target_os = "android"))))]
     let builder = builder;
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    let builder = builder.with_initialization_script(include_str!("filesystem-shim.js"));
+    #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
+    let builder = builder;
 
     builder.with_ipc_handler(move |request: Request<String>| {
         #[cfg(target_os = "macos")]
@@ -122,6 +131,28 @@ pub(crate) fn configure(
 }
 
 pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>) -> Option<String> {
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    {
+        let call = serde_json::from_str::<IpcCall>(body).ok()?;
+        if call.method.starts_with("filesystem.") {
+            let Some(origin) = secure_origin(uri) else {
+                return Some(reply_script(
+                    "__voidFileSystemReply",
+                    &call.id,
+                    Err((
+                        "Folder access is available only to secure website origins.".into(),
+                        "SecurityError",
+                    )),
+                ));
+            };
+            return Some(reply_script(
+                "__voidFileSystemReply",
+                &call.id,
+                filesystem::handle(&origin, &call.method, &call.args),
+            ));
+        }
+    }
+
     #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
     {
         let call = serde_json::from_str::<IpcCall>(body).ok()?;
@@ -199,7 +230,10 @@ fn process_call(uri: &str, body: &str) -> Option<String> {
     ))
 }
 
-#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+#[cfg(all(
+    any(feature = "bluetooth", feature = "filesystem"),
+    not(target_os = "android")
+))]
 pub(crate) fn secure_origin(uri: &str) -> Option<String> {
     uri.parse::<wry::http::Uri>()
         .ok()
@@ -232,7 +266,10 @@ fn secure_origin_from_uri(uri: &wry::http::Uri) -> Option<String> {
     ))
 }
 
-#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+#[cfg(all(
+    any(feature = "bluetooth", feature = "filesystem"),
+    not(target_os = "android")
+))]
 fn reply_script(
     callback: &str,
     id: &str,
@@ -330,7 +367,11 @@ mod macos_location {
                     c"/System/Library/Frameworks/CoreLocation.framework/CoreLocation".as_ptr(),
                     RTLD_NOW | RTLD_GLOBAL,
                 );
-                if handle.is_null() { Err(()) } else { Ok(handle as usize) }
+                if handle.is_null() {
+                    Err(())
+                } else {
+                    Ok(handle as usize)
+                }
             });
             if framework.is_err() {
                 clear_sender();
