@@ -49,8 +49,17 @@ jar cf "${temp_dir}/bridge.jar" -C "${temp_dir}/classes" .
   --output "${temp_dir}/dex" "${temp_dir}/bridge.jar"
 
 cp "${apk_path}" "${temp_dir}/with-bridge.apk"
-(cd "${temp_dir}/dex" && zip -q "${temp_dir}/with-bridge.apk" classes.dex)
-"${tools_dir}/zipalign" -f 4 "${temp_dir}/with-bridge.apk" "${temp_dir}/aligned.apk"
+if [[ -f branding/icon.png ]]; then
+  for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+    mkdir -p "${temp_dir}/dex/res/mipmap-${density}"
+    cp branding/icon.png "${temp_dir}/dex/res/mipmap-${density}/ic_launcher.png"
+    cp branding/icon.png "${temp_dir}/dex/res/mipmap-${density}/ic_launcher_round.png"
+  done
+  (cd "${temp_dir}/dex" && zip -q -r "${temp_dir}/with-bridge.apk" classes.dex res)
+else
+  (cd "${temp_dir}/dex" && zip -q "${temp_dir}/with-bridge.apk" classes.dex)
+fi
+"${tools_dir}/zipalign" -f -p 4 "${temp_dir}/with-bridge.apk" "${temp_dir}/aligned.apk"
 "${tools_dir}/apksigner" sign \
   --ks "${keystore}" \
   --ks-pass "pass:${keystore_password}" \

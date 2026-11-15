@@ -3,206 +3,210 @@ set -euo pipefail
 
 template_apk="${1:?usage: package-android-master.sh TEMPLATE.apk OUTPUT.apk}"
 output_apk="${2:?usage: package-android-master.sh TEMPLATE.apk OUTPUT.apk}"
-apktool_version="3.0.3"
-apktool_sha256="dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423"
-apktool_jar="${APKTOOL_JAR:-.cache/apktool-${apktool_version}.jar}"
-sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
 build_tools="${ANDROID_BUILD_TOOLS:-34.0.0}"
 app_name="${APP_NAME:-VOID}"
 app_slug="${APP_SLUG:-void}"
 app_package="${ANDROID_PACKAGE:-com.void.void_engine}"
 app_version="${APP_VERSION:-1.0.0}"
-app_profile="${APP_PROFILE:-lite}"
 keystore="${CARGO_APK_RELEASE_KEYSTORE:-${HOME}/.android/debug.keystore}"
 keystore_password="${CARGO_APK_RELEASE_KEYSTORE_PASSWORD:-android}"
 
-if [[ -z "$sdk_root" ]]; then
-  echo "ANDROID_HOME or ANDROID_SDK_ROOT must point to the Android SDK" >&2
-  exit 1
-fi
 tools_dir="${sdk_root}/build-tools/${build_tools}"
-for tool in java curl sha256sum python3; do command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 1; }; done
-for tool in zipalign apksigner; do [[ -x "${tools_dir}/${tool}" ]] || { echo "Missing Android tool: ${tools_dir}/${tool}" >&2; exit 1; }; done
-android_jar="${sdk_root}/platforms/android-33/android.jar"
-[[ -f "$android_jar" ]] || { echo "Missing Android framework resources: $android_jar" >&2; exit 1; }
-[[ -f "$template_apk" && -f void.json && -f branding/icon.png ]] || { echo "Template APK, void.json, or branding/icon.png is missing" >&2; exit 1; }
-[[ "$app_profile" == "lite" || "$app_profile" == "max" ]] || { echo "APP_PROFILE must be lite or max" >&2; exit 1; }
-
-mkdir -p "$(dirname "$apktool_jar")" "$(dirname "$output_apk")" .cache
-if [[ ! -f "$apktool_jar" ]] || [[ "$(sha256sum "$apktool_jar" | awk '{print $1}')" != "$apktool_sha256" ]]; then
-  curl --fail --location --silent --show-error \
-    "https://github.com/iBotPeaches/Apktool/releases/download/v${apktool_version}/apktool_${apktool_version}.jar" \
-    --output "${apktool_jar}.download"
-  echo "${apktool_sha256}  ${apktool_jar}.download" | sha256sum --check --status || { rm -f "${apktool_jar}.download"; echo "Apktool checksum verification failed" >&2; exit 1; }
-  mv "${apktool_jar}.download" "$apktool_jar"
+if [[ ! -x "${tools_dir}/zipalign" || ! -x "${tools_dir}/apksigner" ]]; then
+  latest_bt="$(find "${sdk_root}/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [[ -n "$latest_bt" && -x "${latest_bt}/zipalign" && -x "${latest_bt}/apksigner" ]]; then
+    tools_dir="$latest_bt"
+  else
+    echo "Missing Android build-tools (zipalign/apksigner) under ${sdk_root}/build-tools" >&2
+    exit 1
+  fi
 fi
 
+[[ -f "$template_apk" && -f void.json && -f branding/icon.png ]] || {
+  echo "Template APK, void.json, or branding/icon.png is missing" >&2
+  exit 1
+}
+
+mkdir -p "$(dirname "$output_apk")"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
-decoded="${temp_dir}/decoded"
-framework_dir="${APKTOOL_FRAMEWORK_DIR:-${temp_dir}/framework}"
-mkdir -p "$framework_dir"
-# Use this SDK's platform resources explicitly so Apktool's AAPT2 link always
-# receives framework package 1, independent of runner-global Apktool state.
-if [[ ! -f "${framework_dir}/1.apk" ]]; then
-  java -jar "$apktool_jar" if "$android_jar" --frame-path "$framework_dir"
-fi
-java -jar "$apktool_jar" d --force --frame-path "$framework_dir" "$template_apk" --output "$decoded"
+repacked_apk="${temp_dir}/repacked.apk"
+aligned_apk="${temp_dir}/aligned.apk"
+signed_apk="${temp_dir}/signed.apk"
 
-python3 - "$decoded/AndroidManifest.xml" "$app_package" "$app_name" "$app_version" "$app_profile" <<'PY'
-import sys
-import xml.etree.ElementTree as ET
-
-manifest_path, package_name, app_name, app_version, profile = sys.argv[1:]
-android = "http://schemas.android.com/apk/res/android"
-ET.register_namespace("android", android)
-tree = ET.parse(manifest_path)
-root = tree.getroot()
-root.set("package", package_name)
-root.set("{%s}versionName" % android, app_version)
-application = root.find("application")
-if application is None:
-    raise SystemExit("Android manifest has no application element")
-application.set("{%s}label" % android, app_name)
-application.set("{%s}icon" % android, "@mipmap/ic_launcher")
-application.set("{%s}roundIcon" % android, "@mipmap/ic_launcher_round")
-# Keep the framework theme reference fully qualified. If it is emitted as an
-# app-local @style reference, AAPT2 looks for a nonexistent app resource.
-application.set("{%s}theme" % android, "@android:style/Theme.Material.NoActionBar")
-permissions = {
-    "android.permission.ACCESS_COARSE_LOCATION",
-    "android.permission.ACCESS_FINE_LOCATION",
-    "android.permission.BLUETOOTH",
-    "android.permission.BLUETOOTH_ADMIN",
-    "android.permission.BLUETOOTH_SCAN",
-    "android.permission.BLUETOOTH_CONNECT",
-}
-for node in list(root.findall("uses-permission")):
-    if node.get("{%s}name" % android) in permissions:
-        root.remove(node)
-if profile == "max":
-    for name, max_sdk in [
-        ("android.permission.ACCESS_COARSE_LOCATION", None),
-        ("android.permission.ACCESS_FINE_LOCATION", None),
-        ("android.permission.BLUETOOTH", "30"),
-        ("android.permission.BLUETOOTH_ADMIN", "30"),
-        ("android.permission.BLUETOOTH_SCAN", None),
-        ("android.permission.BLUETOOTH_CONNECT", None),
-    ]:
-        node = ET.Element("uses-permission")
-        node.set("{%s}name" % android, name)
-        if max_sdk:
-            node.set("{%s}maxSdkVersion" % android, max_sdk)
-        if name == "android.permission.BLUETOOTH_SCAN":
-            node.set("{%s}usesPermissionFlags" % android, "neverForLocation")
-        root.insert(0, node)
-tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
-PY
-
-# Ensure the rebuild links AndroidManifest.xml against framework package 1.
-# Edit only this small Apktool metadata block using Python's standard library.
-python3 - "$decoded/apktool.yml" <<'PY'
+# Direct ZIP & binary AXML injection (zero apktool / aapt2 / dex decoding overhead)
+python3 - "$template_apk" "$repacked_apk" "$app_package" "$app_name" "$app_version" <<'PY'
 import pathlib
-import re
+import struct
 import sys
+import zipfile
 
-path = pathlib.Path(sys.argv[1])
-lines = path.read_text(encoding="utf-8").splitlines()
-start = next((i for i, line in enumerate(lines) if line == "usesFramework:"), None)
-if start is None:
-    lines.extend(["", "usesFramework:", "  ids:", "  - 1", "  tag: null"])
-else:
-    end = start + 1
-    while end < len(lines) and (not lines[end] or lines[end][0].isspace()):
-        end += 1
-    block = lines[start + 1:end]
-    ids = []
-    for line in block:
-        match = re.match(r"^\s*-\s*(\d+)\s*$", line)
-        if match and match.group(1) not in ids:
-            ids.append(match.group(1))
-    if "1" not in ids:
-        ids.insert(0, "1")
-    tag = next((line.split(":", 1)[1].strip() for line in block
-                if re.match(r"^\s*tag\s*:", line)), "null")
-    lines[start:end] = ["usesFramework:", "  ids:"] + [f"  - {value}" for value in ids] + [f"  tag: {tag}"]
+template_apk, repacked_apk, package_name, app_name, app_version = sys.argv[1:]
+void_json_bytes = pathlib.Path("void.json").read_bytes()
+icon_bytes = pathlib.Path("branding/icon.png").read_bytes()
 
-# Android 11+ rejects targetSdk 30+ APKs when resources.arsc is compressed.
-# Preserve Apktool's existing entries while forcing the resource table to be
-# stored (uncompressed) in its rebuilt APK.
-start = next((i for i, line in enumerate(lines) if re.match(r"^doNotCompress\s*:", line)), None)
-if start is None:
-    lines.extend(["", "doNotCompress:", "  - arsc"])
-else:
-    key = re.match(r"^doNotCompress\s*:\s*(.*)$", lines[start])
-    inline = key.group(1).strip() if key else ""
-    if inline.startswith("[") and inline.endswith("]"):
-        entries = [value.strip().strip("'\" ") for value in inline[1:-1].split(",")]
-        if "arsc" not in entries:
-            entries.append("arsc")
-            lines[start] = "doNotCompress: [" + ", ".join(entries) + "]"
-    else:
-        end = start + 1
-        while end < len(lines) and (not lines[end].strip() or lines[end][:1].isspace() or re.match(r"^\s*-\s", lines[end])):
-            end += 1
-        block = lines[start + 1:end]
-        entries = [match.group(1).strip("'\" ") for line in block
-                   if (match := re.match(r"^\s*-\s*(.*?)\s*$", line))]
-        if "arsc" not in entries:
-            indentation = next((re.match(r"^(\s*)-\s", line).group(1) for line in block
-                                if re.match(r"^\s*-\s", line)), "  ")
-            lines.insert(end, f"{indentation}- arsc")
-path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def patch_axml(data: bytes, pkg: str, label: str, ver: str) -> bytes:
+    if len(data) < 36:
+        return data
+    magic, _ = struct.unpack_from("<II", data, 0)
+    if magic != 0x00080003:
+        return data
+    sp_type, sp_hdr_size, sp_size, str_count, style_count, flags, strings_start, _ = struct.unpack_from("<HHIIIIII", data, 8)
+    if sp_type != 0x0001 or style_count != 0:
+        return data
+    is_utf8 = bool(flags & 0x100)
+    offsets = [struct.unpack_from("<I", data, 8 + sp_hdr_size + i * 4)[0] for i in range(str_count)]
+    pool_data_start = 8 + strings_start
+    strings = []
+    for off in offsets:
+        pos = pool_data_start + off
+        if is_utf8:
+            c_len = data[pos]; pos += 1
+            if c_len & 0x80:
+                c_len = ((c_len & 0x7f) << 8) | data[pos]; pos += 1
+            b_len = data[pos]; pos += 1
+            if b_len & 0x80:
+                b_len = ((b_len & 0x7f) << 8) | data[pos]; pos += 1
+            strings.append(data[pos:pos + b_len].decode("utf-8", errors="replace"))
+        else:
+            c_len = struct.unpack_from("<H", data, pos)[0]; pos += 2
+            if c_len & 0x8000:
+                low = struct.unpack_from("<H", data, pos)[0]; pos += 2
+                c_len = ((c_len & 0x7fff) << 16) | low
+            strings.append(data[pos:pos + c_len * 2].decode("utf-16le", errors="replace"))
+
+    def add_or_get(s: str) -> int:
+        if s in strings:
+            return strings.index(s)
+        strings.append(s)
+        return len(strings) - 1
+
+    pkg_idx = add_or_get(pkg)
+    label_idx = add_or_get(label)
+    ver_idx = add_or_get(ver)
+
+    tail = bytearray(data[8 + sp_size:])
+    pos = 0
+    while pos + 8 <= len(tail):
+        c_type, c_hdr_size, c_size = struct.unpack_from("<HHI", tail, pos)
+        if c_size < 8 or pos + c_size > len(tail):
+            break
+        if c_type == 0x0102 and c_hdr_size >= 16 and pos + 36 <= len(tail):
+            ns_idx, name_idx, attr_start, attr_size, attr_count = struct.unpack_from("<iiHHH", tail, pos + 16)
+            elem_name = strings[name_idx] if 0 <= name_idx < len(strings) else ""
+            attr_base = pos + 16 + attr_start
+            for a in range(attr_count):
+                a_off = attr_base + a * attr_size
+                if a_off + 20 > pos + c_size:
+                    break
+                a_ns, a_name, a_raw, tv_size, tv_zero, tv_type, tv_data = struct.unpack_from("<iiiHBBI", tail, a_off)
+                attr_name = strings[a_name] if 0 <= a_name < len(strings) else ""
+                if elem_name == "manifest" and attr_name == "package":
+                    struct.pack_into("<iiiHBBI", tail, a_off, a_ns, a_name, pkg_idx, tv_size, tv_zero, 0x03, pkg_idx)
+                elif elem_name == "manifest" and attr_name == "versionName":
+                    struct.pack_into("<iiiHBBI", tail, a_off, a_ns, a_name, ver_idx, tv_size, tv_zero, 0x03, ver_idx)
+                elif elem_name in ("application", "activity") and attr_name == "label":
+                    struct.pack_into("<iiiHBBI", tail, a_off, a_ns, a_name, label_idx, tv_size, tv_zero, 0x03, label_idx)
+        pos += c_size
+
+    encoded_blobs = []
+    new_offsets = []
+    cur_off = 0
+    for s in strings:
+        new_offsets.append(cur_off)
+        if is_utf8:
+            u16_len = len(s.encode("utf-16le")) // 2
+            b = s.encode("utf-8")
+            b_len = len(b)
+            hdr = bytearray()
+            if u16_len > 0x7f:
+                hdr.extend([(u16_len >> 8) | 0x80, u16_len & 0xff])
+            else:
+                hdr.append(u16_len)
+            if b_len > 0x7f:
+                hdr.extend([(b_len >> 8) | 0x80, b_len & 0xff])
+            else:
+                hdr.append(b_len)
+            blob = bytes(hdr) + b + b"\x00"
+        else:
+            b = s.encode("utf-16le")
+            u16_len = len(b) // 2
+            if u16_len > 0x7fff:
+                hdr = struct.pack("<HH", (u16_len >> 16) | 0x8000, u16_len & 0xffff)
+            else:
+                hdr = struct.pack("<H", u16_len)
+            blob = hdr + b + b"\x00\x00"
+        encoded_blobs.append(blob)
+        cur_off += len(blob)
+
+    pool_bytes = bytearray(b"".join(encoded_blobs))
+    while len(pool_bytes) % 4 != 0:
+        pool_bytes.append(0)
+    new_str_count = len(strings)
+    new_strings_start = sp_hdr_size + new_str_count * 4
+    new_sp_size = new_strings_start + len(pool_bytes)
+    sp_hdr = struct.pack("<HHIIIIII", 0x0001, sp_hdr_size, new_sp_size, new_str_count, 0, flags, new_strings_start, 0)
+    off_table = b"".join(struct.pack("<I", o) for o in new_offsets)
+    new_total_size = 8 + new_sp_size + len(tail)
+    file_hdr = struct.pack("<II", 0x00080003, new_total_size)
+    return file_hdr + sp_hdr + off_table + bytes(pool_bytes) + bytes(tail)
+
+mipmap_targets = {
+    f"res/mipmap-{d}/{name}.png"
+    for d in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")
+    for name in ("ic_launcher", "ic_launcher_round")
+}
+written = set()
+
+with zipfile.ZipFile(template_apk, "r") as zin, zipfile.ZipFile(repacked_apk, "w") as zout:
+    for info in zin.infolist():
+        fn = info.filename
+        if fn.startswith("META-INF/") and (fn.endswith((".SF", ".RSA", ".DSA", ".EC")) or fn == "META-INF/MANIFEST.MF"):
+            continue
+        if fn.startswith("res/mipmap-anydpi"):
+            continue
+        raw = zin.read(fn)
+        out_info = zipfile.ZipInfo(filename=fn, date_time=(2026, 1, 1, 0, 0, 0))
+        out_info.external_attr = info.external_attr
+        if fn == "resources.arsc":
+            out_info.compress_type = zipfile.ZIP_STORED
+            zout.writestr(out_info, raw)
+        elif fn == "AndroidManifest.xml":
+            out_info.compress_type = zipfile.ZIP_DEFLATED
+            zout.writestr(out_info, patch_axml(raw, package_name, app_name, app_version))
+        elif fn == "assets/void.json":
+            out_info.compress_type = zipfile.ZIP_DEFLATED
+            zout.writestr(out_info, void_json_bytes)
+        elif fn in mipmap_targets or (fn.startswith("res/mipmap") and fn.endswith(".png")):
+            out_info.compress_type = zipfile.ZIP_STORED
+            zout.writestr(out_info, icon_bytes)
+        else:
+            out_info.compress_type = info.compress_type
+            zout.writestr(out_info, raw)
+        written.add(fn)
+
+    if "assets/void.json" not in written:
+        zi = zipfile.ZipInfo("assets/void.json", date_time=(2026, 1, 1, 0, 0, 0))
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        zout.writestr(zi, void_json_bytes)
+
+    for target in sorted(mipmap_targets):
+        if target not in written:
+            zi = zipfile.ZipInfo(target, date_time=(2026, 1, 1, 0, 0, 0))
+            zi.compress_type = zipfile.ZIP_STORED
+            zout.writestr(zi, icon_bytes)
 PY
 
-mkdir -p "$decoded/assets"
-cp void.json "$decoded/assets/void.json"
-for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-  dir="$decoded/res/mipmap-${density}"
-  mkdir -p "$dir"
-  cp branding/icon.png "$dir/ic_launcher.png"
-  cp branding/icon.png "$dir/ic_launcher_round.png"
-done
-rm -rf "$decoded/res/mipmap-anydpi-v26"
-
-rebuilt="${temp_dir}/rebuilt.apk"
-java -jar "$apktool_jar" b --frame-path "$framework_dir" "$decoded" --output "$rebuilt"
 if [[ ! -f "$keystore" ]]; then
   mkdir -p "$(dirname "$keystore")"
   keytool -genkeypair -keystore "$keystore" -storepass "$keystore_password" \
     -alias androiddebugkey -keypass "$keystore_password" -keyalg RSA -keysize 2048 \
     -validity 10000 -dname 'CN=Android Debug,O=Android,C=US' -noprompt
 fi
-aligned="${temp_dir}/aligned.apk"
-signed="${temp_dir}/signed.apk"
-"${tools_dir}/zipalign" -f 4 "$rebuilt" "$aligned"
-"${tools_dir}/apksigner" sign --ks "$keystore" --ks-pass "pass:${keystore_password}" \
-  --key-pass "pass:${keystore_password}" --out "$signed" "$aligned"
-"${tools_dir}/apksigner" verify "$signed"
-"${tools_dir}/zipalign" -c -v 4 "$signed"
-python3 - "$signed" <<'PY'
-import struct
-import sys
-import zipfile
 
-apk_path = sys.argv[1]
-with zipfile.ZipFile(apk_path) as archive:
-    try:
-        resources = archive.getinfo("resources.arsc")
-    except KeyError:
-        raise SystemExit("Packaged APK is missing resources.arsc")
-    if resources.compress_type != zipfile.ZIP_STORED:
-        raise SystemExit("Packaged APK compresses resources.arsc; Android 11+ requires it to be stored")
-    with open(apk_path, "rb") as apk:
-        apk.seek(resources.header_offset)
-        header = apk.read(30)
-        if header[:4] != b"PK\x03\x04":
-            raise SystemExit("Could not read resources.arsc local ZIP header")
-        name_length, extra_length = struct.unpack_from("<HH", header, 26)
-        data_offset = resources.header_offset + 30 + name_length + extra_length
-    if data_offset % 4:
-        raise SystemExit("resources.arsc is not aligned on a 4-byte boundary")
-    print(f"Verified signed resources.arsc is uncompressed and 4-byte aligned (offset {data_offset})")
-PY
-mv "$signed" "$output_apk"
+"${tools_dir}/zipalign" -f -p 4 "$repacked_apk" "$aligned_apk"
+"${tools_dir}/apksigner" sign --ks "$keystore" --ks-pass "pass:${keystore_password}" \
+  --key-pass "pass:${keystore_password}" --out "$signed_apk" "$aligned_apk"
+mv "$signed_apk" "$output_apk"
 echo "Packaged ${app_name} (${app_package}) as ${output_apk}"

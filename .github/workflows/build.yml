@@ -109,8 +109,18 @@ jobs:
     if: ${{ inputs.build_macos }}
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7.0.1
-      - name: Configure app metadata
+      - name: Fetch source snapshot without Git checkout overhead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-source.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "$archive" "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - name: Prepare macOS app metadata, icon, and master binary
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -123,28 +133,23 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
           APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
-        run: node scripts/configure-build.mjs
-      - name: Discover and prepare app icon
-        env:
-          TARGET_URL: ${{ inputs.target_url }}
-          ICON_URL: ${{ inputs.icon_url }}
-        run: node scripts/prepare-branding.mjs
-      - name: Download selected macOS master binary
-        env:
           GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.multi_arch && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal') || format('void-engine-{0}-macos-{1}', inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite', runner.arch == 'ARM64' && 'aarch64' || 'x86_64') }}
           MASTER_BINARY_OUTPUT: target/master/void
-        run: node scripts/download-master-binary.mjs
+          MASTER_TEMPLATE_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-macos-template.dmg' || 'void-engine-lite-macos-template.dmg' }}
+          MASTER_TEMPLATE_OUTPUT: target/master/void-template.dmg
+        run: node scripts/prepare-macos-build.mjs
       - name: Package macOS app and DMG
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
           MASTER_BINARY_PATH: target/master/void
+          MASTER_TEMPLATE_DMG: target/master/void-template.dmg
           ENGINE_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
-        run: node scripts/package-macos-dmg.mjs
+        run: bash scripts/package-macos-dmg.sh
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ steps.configure.outputs.app_slug }}-macos-dmg
@@ -172,24 +177,8 @@ jobs:
             --header "Authorization: Bearer $env:GH_TOKEN" `
             --output $archive $uri
           if ($LASTEXITCODE -ne 0) { throw "Could not download source snapshot (curl exit $LASTEXITCODE)" }
-          if (-not (Test-Path -LiteralPath $archive) -or (Get-Item -LiteralPath $archive).Length -eq 0) {
-            throw 'GitHub returned an empty source snapshot.'
-          }
           & tar.exe -xzf $archive --strip-components=1 -C $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) { throw "Could not extract source snapshot (tar exit $LASTEXITCODE)" }
-          foreach ($path in @(
-            'void.json',
-            'scripts/configure-build.mjs',
-            'scripts/prepare-branding.mjs',
-            'scripts/download-master-binary.mjs',
-            'scripts/prepare-windows-build.mjs',
-            'scripts/set-windows-icon.ps1',
-            'scripts/package-windows-msi.ps1'
-          )) {
-            if (-not (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path))) {
-              throw "Source snapshot is missing required packaging file: $path"
-            }
-          }
       - name: Prepare Windows app metadata, icon, and master binary
         id: configure
         env:
@@ -208,6 +197,8 @@ jobs:
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
           MASTER_BINARY_OUTPUT: target/master/void.exe
+          MASTER_TEMPLATE_MSI_ASSET: ${{ matrix.format == 'msi' && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-template.msi' || 'void-engine-lite-windows-template.msi') || '' }}
+          MASTER_TEMPLATE_MSI_OUTPUT: ${{ matrix.format == 'msi' && 'target/master/void-template.msi' || '' }}
         run: node scripts/prepare-windows-build.mjs
       - name: Apply per-app Windows executable icon
         if: ${{ matrix.format == 'exe' }}
@@ -222,15 +213,6 @@ jobs:
           New-Item -ItemType Directory -Force output | Out-Null
           Copy-Item -Force target/master/void.exe "output/$($env:APP_SLUG).exe"
           Copy-Item -Force void.json "output/$($env:APP_SLUG).json"
-      - name: Ensure WiX Toolset is available
-        if: ${{ matrix.format == 'msi' }}
-        shell: pwsh
-        run: |
-          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
-            $wixBin = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'WiX Toolset v3.14/bin'
-            if (Test-Path (Join-Path $wixBin 'candle.exe')) { Add-Content $env:GITHUB_PATH $wixBin }
-            else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
-          }
       - name: Package Windows MSI
         if: ${{ matrix.format == 'msi' }}
         env:
@@ -238,6 +220,7 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
           MASTER_BINARY_PATH: target/master/void.exe
+          MASTER_TEMPLATE_MSI: target/master/void-template.msi
         shell: pwsh
         run: ./scripts/package-windows-msi.ps1
       - uses: actions/upload-artifact@v7.0.2
@@ -264,8 +247,18 @@ jobs:
       matrix:
         format: ${{ fromJSON(inputs.linux_format == 'both' && '["deb","appimage"]' || format('["{0}"]', inputs.linux_format)) }}
     steps:
-      - uses: actions/checkout@v7.0.1
-      - name: Configure app metadata
+      - name: Fetch source snapshot without Git checkout overhead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-source.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "$archive" "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - name: Prepare Linux app metadata, icon, and master binary
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -278,20 +271,12 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
           APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
-        run: node scripts/configure-build.mjs
-      - name: Discover and prepare app icon
-        env:
-          TARGET_URL: ${{ inputs.target_url }}
-          ICON_URL: ${{ inputs.icon_url }}
-        run: node scripts/prepare-branding.mjs
-      - name: Download Linux master binary
-        env:
           GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
           MASTER_BINARY_OUTPUT: target/master/void
-        run: node scripts/download-master-binary.mjs
+        run: node scripts/prepare-linux-build.mjs
       - name: Package Debian archive
         if: ${{ matrix.format == 'deb' }}
         env:
@@ -376,8 +361,18 @@ jobs:
     env:
       CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
     steps:
-      - uses: actions/checkout@v7.0.1
-      - name: Configure app metadata
+      - name: Fetch source snapshot without Git checkout overhead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-source.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "$archive" "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - name: Prepare Android app metadata, icon, and master APK
         id: configure
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -390,60 +385,18 @@ jobs:
           APP_FULLSCREEN: ${{ inputs.fullscreen }}
           APP_NEW_WINDOW: ${{ inputs.new_window }}
           APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
-        run: node scripts/configure-build.mjs
-      - name: Discover and prepare app icon
-        env:
-          TARGET_URL: ${{ inputs.target_url }}
-          ICON_URL: ${{ inputs.icon_url }}
-        run: node scripts/prepare-branding.mjs
-      - name: Download Android master APK and pre-baked tools
-        env:
           GH_TOKEN: ${{ github.token }}
           MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
-          MASTER_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
-        run: |
-          set -euo pipefail
-          MASTER_BINARY_ASSET="void-engine-${MASTER_PROFILE}-android-template.apk" \
-          MASTER_BINARY_OUTPUT="target/master/void-android-template.apk" \
-            node scripts/download-master-binary.mjs
-
-          mkdir -p .cache/android-tools
-          if MASTER_BINARY_ASSET="void-engine-${MASTER_PROFILE}-android-tools.tar.gz" \
-             MASTER_BINARY_OUTPUT=".cache/void-android-tools.tar.gz" \
-             node scripts/download-master-binary.mjs 2>/dev/null; then
-            tar -xzf .cache/void-android-tools.tar.gz -C .cache/android-tools
-            chmod +x .cache/android-tools/sdk/build-tools/34.0.0/zipalign .cache/android-tools/sdk/build-tools/34.0.0/apksigner
-            echo "ANDROID_HOME=${GITHUB_WORKSPACE}/.cache/android-tools/sdk" >> "$GITHUB_ENV"
-            echo "APKTOOL_JAR=${GITHUB_WORKSPACE}/.cache/android-tools/apktool-3.0.3.jar" >> "$GITHUB_ENV"
-            echo "APKTOOL_FRAMEWORK_DIR=${GITHUB_WORKSPACE}/.cache/android-tools/framework" >> "$GITHUB_ENV"
-            echo "CARGO_APK_RELEASE_KEYSTORE=${GITHUB_WORKSPACE}/.cache/android-tools/debug.keystore" >> "$GITHUB_ENV"
-          else
-            export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-            if [[ ! -f "$ANDROID_HOME/platforms/android-33/android.jar" \
-              || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
-              || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
-              set +o pipefail
-              yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
-                "platforms;android-33" "build-tools;34.0.0"
-              set -o pipefail
-            fi
-            mkdir -p ~/.android
-            if [[ ! -f ~/.android/debug.keystore ]]; then
-              keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey \
-                -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-                -dname 'CN=Android Debug,O=Android,C=US' -noprompt
-            fi
-            echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-            echo "CARGO_APK_RELEASE_KEYSTORE=/home/runner/.android/debug.keystore" >> "$GITHUB_ENV"
-          fi
-      - name: Repackage app-specific Android APK
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
+          MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
+        run: node scripts/prepare-android-build.mjs
+      - name: Repackage app-specific Android APK via direct ZIP injection
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
           APP_VERSION: ${{ inputs.version }}
-          APP_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
         run: bash scripts/package-android-master.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.apk"
       - uses: actions/upload-artifact@v7.0.2
         with:
