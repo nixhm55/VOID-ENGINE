@@ -38,27 +38,30 @@ if (-not (Test-Path -LiteralPath $templateMsi)) {
 
 Copy-Item -Force $templateMsi $msiPath
 
-# Pack the icon-stamped executable and void.json into cab1.cab using native makecab.exe (CompressionType=NONE for instant 50ms packing)
+# Pack the icon-stamped executable and void.json into cab1.cab using native makecab.exe (Compress=OFF, MaxDiskSize=0)
 $cabDir = Join-Path $inputDir 'cab'
 New-Item -ItemType Directory -Force $cabDir | Out-Null
 $ddfPath = Join-Path $cabDir 'payload.ddf'
 $cabPath = Join-Path $cabDir 'cab1.cab'
+$infPath = Join-Path $cabDir 'setup.inf'
+$rptPath = Join-Path $cabDir 'setup.rpt'
 $ddfContent = @"
 .OPTION EXPLICIT
 .Set CabinetNameTemplate=cab1.cab
-.Set DiskDirectoryTemplate=$cabDir
-.Set CompressionType=NONE
+.Set DiskDirectoryTemplate="$cabDir"
+.Set DiskDirectory1="$cabDir"
+.Set MaxDiskSize=0
 .Set Cabinet=ON
 .Set Compress=OFF
-.Set InfFileName=$(Join-Path $cabDir 'setup.inf')
-.Set RptFileName=$(Join-Path $cabDir 'setup.rpt')
+.Set InfFileName="$infPath"
+.Set RptFileName="$rptPath"
 "$binaryPath" ApplicationExeFile
 "$configPath" ApplicationConfigFile
 "@
 Set-Content -LiteralPath $ddfPath -Value $ddfContent -Encoding ASCII
-& makecab.exe /F $ddfPath | Out-Null
+$makecabOut = & makecab.exe /F $ddfPath 2>&1
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $cabPath)) {
-  throw 'makecab.exe failed to build payload cabinet'
+  throw "makecab.exe failed to build payload cabinet: $($makecabOut -join "`n")"
 }
 
 $exeSize = (Get-Item -LiteralPath $binaryPath).Length

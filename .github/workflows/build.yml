@@ -156,14 +156,10 @@ jobs:
           path: output/*.dmg
           if-no-files-found: error
 
-  build-windows:
-    name: Windows ${{ matrix.format }}
-    if: ${{ inputs.build_windows }}
+  build-windows-exe:
+    name: Windows exe
+    if: ${{ inputs.build_windows && (inputs.windows_format == 'exe' || inputs.windows_format == 'both') }}
     runs-on: windows-2025
-    strategy:
-      fail-fast: false
-      matrix:
-        format: ${{ fromJSON(inputs.windows_format == 'both' && '["exe","msi"]' || format('["{0}"]', inputs.windows_format)) }}
     steps:
       - name: Fetch source snapshot without Git checkout overhead
         shell: pwsh
@@ -197,15 +193,11 @@ jobs:
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
           MASTER_BINARY_OUTPUT: target/master/void.exe
-          MASTER_TEMPLATE_MSI_ASSET: ${{ matrix.format == 'msi' && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-template.msi' || 'void-engine-lite-windows-template.msi') || '' }}
-          MASTER_TEMPLATE_MSI_OUTPUT: ${{ matrix.format == 'msi' && 'target/master/void-template.msi' || '' }}
         run: node scripts/prepare-windows-build.mjs
       - name: Apply per-app Windows executable icon
-        if: ${{ matrix.format == 'exe' }}
         shell: pwsh
         run: ./scripts/set-windows-icon.ps1 -Executable target/master/void.exe -IconFile branding/app.ico
       - name: Package Windows executable and config
-        if: ${{ matrix.format == 'exe' }}
         env:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
         shell: pwsh
@@ -213,8 +205,55 @@ jobs:
           New-Item -ItemType Directory -Force output | Out-Null
           Copy-Item -Force target/master/void.exe "output/$($env:APP_SLUG).exe"
           Copy-Item -Force void.json "output/$($env:APP_SLUG).json"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-windows-exe
+          path: |
+            output/${{ steps.configure.outputs.app_slug }}.exe
+            output/${{ steps.configure.outputs.app_slug }}.json
+          if-no-files-found: error
+
+  build-windows-msi:
+    name: Windows msi
+    if: ${{ inputs.build_windows && (inputs.windows_format == 'msi' || inputs.windows_format == 'both') }}
+    runs-on: windows-2025
+    steps:
+      - name: Fetch source snapshot without Git checkout overhead
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'void-source.tar.gz'
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/tarball/$env:GITHUB_SHA"
+          & curl.exe --fail --location --silent --show-error --retry 3 `
+            --header 'Accept: application/vnd.github+json' `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --output $archive $uri
+          if ($LASTEXITCODE -ne 0) { throw "Could not download source snapshot (curl exit $LASTEXITCODE)" }
+          & tar.exe -xzf $archive --strip-components=1 -C $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw "Could not extract source snapshot (tar exit $LASTEXITCODE)" }
+      - name: Prepare Windows app metadata, icon, and master binary
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
+          MASTER_BINARY_OUTPUT: target/master/void.exe
+          MASTER_TEMPLATE_MSI_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-template.msi' || 'void-engine-lite-windows-template.msi' }}
+          MASTER_TEMPLATE_MSI_OUTPUT: target/master/void-template.msi
+        run: node scripts/prepare-windows-build.mjs
       - name: Package Windows MSI
-        if: ${{ matrix.format == 'msi' }}
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
@@ -224,28 +263,15 @@ jobs:
         shell: pwsh
         run: ./scripts/package-windows-msi.ps1
       - uses: actions/upload-artifact@v7.0.2
-        if: ${{ matrix.format == 'exe' }}
-        with:
-          name: ${{ steps.configure.outputs.app_slug }}-windows-exe
-          path: |
-            output/${{ steps.configure.outputs.app_slug }}.exe
-            output/${{ steps.configure.outputs.app_slug }}.json
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7.0.2
-        if: ${{ matrix.format == 'msi' }}
         with:
           name: ${{ steps.configure.outputs.app_slug }}-windows-msi
           path: output/${{ steps.configure.outputs.app_slug }}.msi
           if-no-files-found: error
 
-  build-linux:
-    name: Linux ${{ matrix.format }}
-    if: ${{ inputs.build_linux }}
+  build-linux-deb:
+    name: Linux deb
+    if: ${{ inputs.build_linux && (inputs.linux_format == 'deb' || inputs.linux_format == 'both') }}
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        format: ${{ fromJSON(inputs.linux_format == 'both' && '["deb","appimage"]' || format('["{0}"]', inputs.linux_format)) }}
     steps:
       - name: Fetch source snapshot without Git checkout overhead
         env:
@@ -278,21 +304,59 @@ jobs:
           MASTER_BINARY_OUTPUT: target/master/void
         run: node scripts/prepare-linux-build.mjs
       - name: Package Debian archive
-        if: ${{ matrix.format == 'deb' }}
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
         run: bash scripts/package-linux-deb.sh target/master/void "output/${{ steps.configure.outputs.app_slug }}.deb"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-linux-deb
+          path: output/*.deb
+          if-no-files-found: error
+
+  build-linux-appimage:
+    name: Linux appimage
+    if: ${{ inputs.build_linux && (inputs.linux_format == 'appimage' || inputs.linux_format == 'both') }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Fetch source snapshot without Git checkout overhead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-source.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "$archive" "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - name: Prepare Linux app metadata, icon, and master binary
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
+          MASTER_BINARY_OUTPUT: target/master/void
+        run: node scripts/prepare-linux-build.mjs
       - name: Cache AppImage tool
-        if: ${{ matrix.format == 'appimage' }}
         uses: actions/cache@v6.1.0
         continue-on-error: true
         with:
           path: .cache/appimagetool-x86_64.AppImage
           key: appimagetool-x86_64-v2
       - name: Package Linux AppImage
-        if: ${{ matrix.format == 'appimage' }}
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
@@ -350,8 +414,8 @@ jobs:
           ARCH=x86_64 .cache/appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir "output/${APP_SLUG}.AppImage"
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: ${{ steps.configure.outputs.app_slug }}-linux-${{ matrix.format }}
-          path: output/*
+          name: ${{ steps.configure.outputs.app_slug }}-linux-appimage
+          path: output/*.AppImage
           if-no-files-found: error
 
   build-android:
