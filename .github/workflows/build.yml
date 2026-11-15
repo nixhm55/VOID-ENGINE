@@ -311,8 +311,6 @@ jobs:
           MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
           MASTER_BINARY_OUTPUT: target/master/void.exe
-          MASTER_TEMPLATE_MSI_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-template.msi' || 'void-engine-lite-windows-template.msi' }}
-          MASTER_TEMPLATE_MSI_OUTPUT: target/master/void-template.msi
         run: node scripts/prepare-windows-build.mjs
       - name: Package Windows MSI
         env:
@@ -320,7 +318,6 @@ jobs:
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
           APP_VERSION: ${{ inputs.version }}
           MASTER_BINARY_PATH: target/master/void.exe
-          MASTER_TEMPLATE_MSI: target/master/void-template.msi
         shell: pwsh
         run: ./scripts/package-windows-msi.ps1
       - uses: actions/upload-artifact@v7.0.2
