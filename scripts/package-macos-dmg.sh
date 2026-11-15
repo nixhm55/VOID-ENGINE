@@ -19,29 +19,55 @@ contents="${app_path}/Contents"
 rm -rf "$staging" "$output_dir"
 mkdir -p "${contents}/MacOS" "${contents}/Resources/AppIcon.iconset" "$output_dir"
 
-# Generate AppIcon.icns in parallel using native sips + iconutil
+if [[ ! -f branding/icon.png ]]; then
+  node scripts/prepare-branding.mjs
+fi
+
 iconset="${contents}/Resources/AppIcon.iconset"
 for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" branding/icon.png --out "${iconset}/icon_${size}x${size}.png" >/dev/null 2>&1 &
+  sips -s format png -z "$size" "$size" branding/icon.png --out "${iconset}/icon_${size}x${size}.png" >/dev/null
 done
-sips -z 32 32 branding/icon.png --out "${iconset}/icon_16x16@2x.png" >/dev/null 2>&1 &
-sips -z 64 64 branding/icon.png --out "${iconset}/icon_32x32@2x.png" >/dev/null 2>&1 &
-sips -z 256 256 branding/icon.png --out "${iconset}/icon_128x128@2x.png" >/dev/null 2>&1 &
-sips -z 512 512 branding/icon.png --out "${iconset}/icon_256x256@2x.png" >/dev/null 2>&1 &
-sips -z 1024 1024 branding/icon.png --out "${iconset}/icon_512x512@2x.png" >/dev/null 2>&1 &
-wait
+sips -s format png -z 32 32 branding/icon.png --out "${iconset}/icon_16x16@2x.png" >/dev/null
+sips -s format png -z 64 64 branding/icon.png --out "${iconset}/icon_32x32@2x.png" >/dev/null
+sips -s format png -z 256 256 branding/icon.png --out "${iconset}/icon_128x128@2x.png" >/dev/null
+sips -s format png -z 512 512 branding/icon.png --out "${iconset}/icon_256x256@2x.png" >/dev/null
+sips -s format png -z 1024 1024 branding/icon.png --out "${iconset}/icon_512x512@2x.png" >/dev/null
 
-app_icon_icns="${output_dir}/.VolumeIcon.icns"
-iconutil -c icns "$iconset" -o "$app_icon_icns"
+app_icon_icns="${contents}/Resources/AppIcon.icns"
+if ! iconutil -c icns "$iconset" -o "$app_icon_icns" 2>/dev/null; then
+  python3 - "$iconset" "$app_icon_icns" <<'PY'
+import pathlib, struct, sys
+
+iconset_dir = pathlib.Path(sys.argv[1])
+out_icns = pathlib.Path(sys.argv[2])
+chunks = []
+for ostype, fname in [
+    (b"icp4", "icon_16x16.png"),
+    (b"ic11", "icon_16x16@2x.png"),
+    (b"icp5", "icon_32x32.png"),
+    (b"ic12", "icon_32x32@2x.png"),
+    (b"ic07", "icon_128x128.png"),
+    (b"ic13", "icon_128x128@2x.png"),
+    (b"ic08", "icon_256x256.png"),
+    (b"ic14", "icon_256x256@2x.png"),
+    (b"ic09", "icon_512x512.png"),
+    (b"ic10", "icon_512x512@2x.png"),
+]:
+    p = iconset_dir / fname
+    if p.is_file():
+        data = p.read_bytes()
+        chunks.append(ostype + struct.pack(">I", 8 + len(data)) + data)
+body = b"".join(chunks)
+out_icns.write_bytes(b"icns" + struct.pack(">I", 8 + len(body)) + body)
+PY
+fi
 rm -rf "$iconset"
-cp "$app_icon_icns" "${contents}/Resources/AppIcon.icns"
 
 cp "$binary" "${contents}/MacOS/void"
 chmod 0755 "${contents}/MacOS/void"
 cp void.json "${contents}/Resources/void.json"
 cp void.json "${contents}/MacOS/void.json"
 
-# Write Info.plist & PkgInfo
 python3 - "${contents}/Info.plist" "$app_name" "$app_slug" "$version" "$engine_profile" <<'PY'
 import pathlib, sys
 from xml.sax.saxutils import escape
@@ -94,16 +120,15 @@ cleanup() {
   if [[ "$mounted" -eq 1 ]]; then
     hdiutil detach "$mount_dir" -force -quiet 2>/dev/null || true
   fi
-  rm -rf "$mount_dir" "$rw_dmg" "$app_icon_icns"
+  rm -rf "$mount_dir" "$rw_dmg"
 }
 trap cleanup EXIT
 
 hdiutil attach -readwrite -noverify -noautoopen -nobrowse -mountpoint "$mount_dir" "$rw_dmg" >/dev/null
 mounted=1
 
-# If using pre-built template DMG, replace template VOID.app with the configured app bundle
 if [[ -f "$template_dmg" ]]; then
-  rm -rf "${mount_dir}/VOID.app" "${mount_dir}/${app_bundle_name}"
+  rm -rf "${mount_dir}/VOID.app" "${mount_dir}/void.app" "${mount_dir}/${app_bundle_name}"
   cp -R "$app_path" "${mount_dir}/${app_bundle_name}"
   ln -sfn /Applications "${mount_dir}/Applications"
   cp "$bg_source" "${mount_dir}/.background.tiff"
@@ -111,7 +136,6 @@ if [[ -f "$template_dmg" ]]; then
   diskutil rename "$mount_dir" "$app_name" >/dev/null 2>&1 || true
 fi
 
-# Hide dot-prefixed background and volume icon files and enable custom volume icon bit
 chflags hidden "${mount_dir}/.background.tiff" "${mount_dir}/.VolumeIcon.icns" 2>/dev/null || true
 if command -v SetFile >/dev/null 2>&1; then
   SetFile -a V "${mount_dir}/.background.tiff" 2>/dev/null || true
@@ -123,8 +147,6 @@ elif [[ -x /usr/bin/SetFile ]]; then
   /usr/bin/SetFile -a C "$mount_dir" 2>/dev/null || true
 fi
 
-# Write deterministic binary .DS_Store (zero pip install, zero Finder/osascript delay)
-# Positions App at (200, 240), Applications at (600, 240), and parks all hidden files off-screen at (2000, 2000)
 python3 - "$mount_dir" "$app_name" "$app_bundle_name" <<'PY'
 import os
 import plistlib
@@ -171,8 +193,8 @@ def make_hfs_alias_v2(v_name: str, v_ctime_unix: float, f_name: str, parent_cnid
         ">4sHHH28sI2sHI64sII4s4shhIH10s",
         b"\x00\x00\x00\x00",
         total_len,
-        2,              # version 2
-        0,              # aliasKind = file
+        2,
+        0,
         v_pas,
         v_ct,
         b"H+",
@@ -260,21 +282,12 @@ for fname, sid, dtype, payload in raw_records:
 assert len(leaf) <= 4096, "Leaf node overflow"
 leaf.extend(b"\x00" * (4096 - len(leaf)))
 
-# Construct 10KB Bud1 .DS_Store file:
-# Block 0 (info block): offset 0x2000, size 2048 (2^11 -> 0x200b)
-# Block 1 (B-tree root header): offset 0x0020, size 32 (2^5 -> 0x0025)
-# Block 2 (B-tree leaf node): offset 0x1000, size 4096 (2^12 -> 0x100c)
 buf = bytearray(4 + 0x2800)
 struct.pack_into(">I", buf, 0, 1)
 struct.pack_into(">4sIII16s", buf, 4, b"Bud1", 0x2000, 0x0800, 0x2000, b"\x00" * 16)
-
-# Block 1 at 4 + 0x0020
 struct.pack_into(">IIIII", buf, 4 + 0x0020, 2, 0, len(raw_records), 1, 0x1000)
-
-# Block 2 at 4 + 0x1000
 buf[4 + 0x1000:4 + 0x2000] = leaf
 
-# Block 0 (allocator bookkeeping) at 4 + 0x2000
 info = bytearray()
 info.extend(struct.pack(">II", 3, 0))
 addrs = [0x200B, 0x0025, 0x100C] + [0] * 253
