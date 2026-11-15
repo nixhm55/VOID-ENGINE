@@ -1,6 +1,6 @@
 {
   "name": "@nixhm55/void-engine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The VOID Engine cloud build command-line client",
   "license": "MIT",
   "repository": {
