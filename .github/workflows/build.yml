@@ -13,7 +13,7 @@ on:
           - Void Engine Max — Full features
         default: Void Engine Lite — Lightweight
       build_macos:
-        description: Build macOS DMG
+        description: Build macOS packages
         type: boolean
         required: false
         default: true
@@ -28,7 +28,7 @@ on:
         required: false
         default: true
       build_android:
-        description: Build Android APK
+        description: Build Android packages
         type: boolean
         required: false
         default: true
@@ -87,6 +87,12 @@ on:
         type: boolean
         required: false
         default: false
+      macos_format:
+        description: macOS packages to build
+        type: choice
+        required: true
+        options: [dmg, pkg, both]
+        default: both
       windows_format:
         description: Windows packages to build
         type: choice
@@ -99,14 +105,20 @@ on:
         required: true
         options: [deb, appimage, both]
         default: both
+      android_format:
+        description: Android packages to build
+        type: choice
+        required: true
+        options: [apk, aab, both]
+        default: both
 
 permissions:
   contents: read
 
 jobs:
-  build-macos:
-    name: macOS DMG
-    if: ${{ inputs.build_macos }}
+  build-macos-dmg:
+    name: macOS dmg
+    if: ${{ inputs.build_macos && (inputs.macos_format == 'dmg' || inputs.macos_format == 'both') }}
     runs-on: macos-15
     steps:
       - name: Fetch source snapshot without Git checkout overhead
@@ -154,6 +166,55 @@ jobs:
         with:
           name: ${{ steps.configure.outputs.app_slug }}-macos-dmg
           path: output/*.dmg
+          if-no-files-found: error
+
+  build-macos-pkg:
+    name: macOS pkg
+    if: ${{ inputs.build_macos && (inputs.macos_format == 'pkg' || inputs.macos_format == 'both') }}
+    runs-on: macos-15
+    steps:
+      - name: Fetch source snapshot without Git checkout overhead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-source.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "$archive" "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - name: Prepare macOS app metadata, icon, and master binary
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.multi_arch && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal') || format('void-engine-{0}-macos-{1}', inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite', runner.arch == 'ARM64' && 'aarch64' || 'x86_64') }}
+          MASTER_BINARY_OUTPUT: target/master/void
+        run: node scripts/prepare-macos-build.mjs
+      - name: Package macOS app and PKG installer
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+          MASTER_BINARY_PATH: target/master/void
+          ENGINE_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
+        run: bash scripts/package-macos-pkg.sh
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-macos-pkg
+          path: output/*.pkg
           if-no-files-found: error
 
   build-windows-exe:
@@ -418,9 +479,9 @@ jobs:
           path: output/*.AppImage
           if-no-files-found: error
 
-  build-android:
-    name: Android APK
-    if: ${{ inputs.build_android }}
+  build-android-apk:
+    name: Android apk
+    if: ${{ inputs.build_android && (inputs.android_format == 'apk' || inputs.android_format == 'both') }}
     runs-on: ubuntu-24.04
     env:
       CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
@@ -455,7 +516,7 @@ jobs:
           MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
           MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
         run: node scripts/prepare-android-build.mjs
-      - name: Repackage app-specific Android APK via direct ZIP injection
+      - name: Repackage app-specific Android APK
         env:
           APP_NAME: ${{ steps.configure.outputs.app_name }}
           APP_SLUG: ${{ steps.configure.outputs.app_slug }}
@@ -466,4 +527,54 @@ jobs:
         with:
           name: ${{ steps.configure.outputs.app_slug }}-android-apk
           path: output/*.apk
+          if-no-files-found: error
+
+  build-android-aab:
+    name: Android aab
+    if: ${{ inputs.build_android && (inputs.android_format == 'aab' || inputs.android_format == 'both') }}
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
+    steps:
+      - name: Fetch source snapshot without Git checkout overhead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/void-source.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --output "$archive" "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - name: Prepare Android app metadata, icon, and master APK
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-android-template.apk' || 'void-engine-lite-android-template.apk' }}
+          MASTER_BINARY_OUTPUT: target/master/void-android-template.apk
+        run: node scripts/prepare-android-build.mjs
+      - name: Package app-specific Android App Bundle (AAB)
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
+          APP_VERSION: ${{ inputs.version }}
+        run: bash scripts/package-android-aab.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.aab"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-android-aab
+          path: output/*.aab
           if-no-files-found: error
