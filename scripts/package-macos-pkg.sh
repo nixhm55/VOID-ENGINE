@@ -233,6 +233,7 @@ pkgbuild \
   --install-location "/Applications" \
   --identifier "com.void.${app_slug}.pkg" \
   --version "$version" \
+  --min-os-version 11.0 \
   --compression latest \
   "$component_pkg" >/dev/null
 
