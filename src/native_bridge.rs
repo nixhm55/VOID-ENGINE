@@ -1,0 +1,840 @@
+use serde::Deserialize;
+#[cfg(all(target_os = "macos", feature = "max"))]
+use std::collections::HashSet;
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tao::event_loop::EventLoopProxy;
+use wry::{http::Request, WebViewBuilder};
+
+#[cfg(all(target_os = "macos", feature = "filesystem"))]
+mod desktop_auth;
+#[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+mod desktop_bluetooth;
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+mod filesystem;
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+const MAX_FILESYSTEM_WORKERS: usize = 4;
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+static FILESYSTEM_WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Bounds how many filesystem calls may run at once so a page cannot spawn a
+/// thread per message.
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+struct WorkerSlot;
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+impl Drop for WorkerSlot {
+    fn drop(&mut self) {
+        FILESYSTEM_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+fn take_worker_slot() -> Option<WorkerSlot> {
+    let mut current = FILESYSTEM_WORKERS.load(Ordering::SeqCst);
+    loop {
+        if current >= MAX_FILESYSTEM_WORKERS {
+            return None;
+        }
+        match FILESYSTEM_WORKERS.compare_exchange(
+            current,
+            current + 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return Some(WorkerSlot),
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShortcutAction {
+    Quit,
+    Close,
+    Minimize,
+    Fullscreen,
+    Reload,
+    Back,
+    Forward,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+}
+
+#[derive(Debug)]
+pub(crate) enum UserEvent {
+    Ipc {
+        uri: String,
+        body: String,
+    },
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    MenuUpdate {
+        origin: String,
+        menus: Vec<MenuDefinition>,
+    },
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    InspectElement,
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    MenuAction {
+        id: String,
+    },
+    /// A press on the page drag region; the window is moved on this thread.
+    #[cfg(target_os = "macos")]
+    DragWindow,
+    /// Cross-platform keyboard shortcut action.
+    #[cfg(not(target_os = "android"))]
+    Shortcut(ShortcutAction),
+    /// Opens popup/target="_blank" web URLs (such as OAuth/login flows) inside
+    /// the app webview instead of launching an external browser.
+    #[cfg(not(target_os = "android"))]
+    NavigateInApp {
+        url: String,
+    },
+    #[cfg(all(
+        any(feature = "bluetooth", feature = "filesystem"),
+        not(target_os = "android")
+    ))]
+    Script {
+        origin: String,
+        source: String,
+    },
+    #[cfg(all(
+        any(feature = "bluetooth", feature = "filesystem"),
+        not(target_os = "android")
+    ))]
+    Prompt {
+        title: String,
+        description: String,
+        buttons: [String; 3],
+        response: std::sync::mpsc::Sender<String>,
+    },
+    /// The folder picker runs on the UI thread; AppKit must not be touched from
+    /// the filesystem worker.
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    PickFolder {
+        response: std::sync::mpsc::Sender<Option<String>>,
+    },
+}
+
+#[derive(Deserialize)]
+struct IpcCall {
+    id: String,
+    method: String,
+    #[serde(default)]
+    action: Option<String>,
+    #[cfg(all(
+        any(feature = "bluetooth", feature = "filesystem"),
+        not(target_os = "android")
+    ))]
+    #[serde(default)]
+    args: serde_json::Value,
+}
+
+#[cfg(all(target_os = "macos", feature = "max"))]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MenuDefinition {
+    pub(crate) title: String,
+    pub(crate) items: Vec<MenuItemDefinition>,
+}
+
+#[cfg(all(target_os = "macos", feature = "max"))]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MenuItemDefinition {
+    pub(crate) id: String,
+    pub(crate) label: String,
+}
+
+#[cfg(all(target_os = "macos", feature = "max"))]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MenuUpdateIpc {
+    id: String,
+    menus: Vec<MenuDefinition>,
+}
+
+#[cfg(all(target_os = "macos", feature = "max"))]
+const MAX_MENU_UPDATE_BYTES: usize = 16 * 1024;
+#[cfg(all(target_os = "macos", feature = "max"))]
+const MAX_DYNAMIC_MENUS: usize = 5;
+#[cfg(all(target_os = "macos", feature = "max"))]
+const MAX_DYNAMIC_MENU_ITEMS: usize = 30;
+
+#[cfg(all(target_os = "macos", feature = "geolocation"))]
+const GEOLOCATION_SHIM: &str = r#"(() => {
+  if (!window.ipc || typeof window.ipc.postMessage !== 'function') return;
+  let nextId = 1;
+  const pending = new Map();
+  const watches = new Map();
+  let nextWatch = 1;
+  function call(method) {
+    return new Promise((resolve, reject) => {
+      const id = String(nextId++);
+      pending.set(id, { resolve, reject });
+      window.ipc.postMessage(JSON.stringify({ id, method }));
+    });
+  }
+  window.__voidNativeReply = (message) => {
+    const task = pending.get(String(message.id));
+    if (!task) return;
+    pending.delete(String(message.id));
+    if (message.error) task.reject(message.error);
+    else task.resolve(message.value);
+  };
+  const error = (reason, callback) => {
+    if (typeof callback === 'function') callback({ code: 1, message: reason || 'Location is unavailable.' });
+  };
+  const geo = {
+    getCurrentPosition(success, failure) {
+      call('geolocation.current').then((position) => {
+        if (typeof success === 'function') success(position);
+      }).catch((reason) => error(reason, failure));
+    },
+    watchPosition(success, failure, options = {}) {
+      const id = nextWatch++;
+      let active = true;
+      const read = () => {
+        if (!active) return;
+        call('geolocation.current').then((position) => {
+          if (active && typeof success === 'function') success(position);
+        }).catch((reason) => error(reason, failure));
+      };
+      read();
+      const timer = setInterval(read, Math.max(10000, Number(options.maximumAge) || 30000));
+      watches.set(id, () => { active = false; clearInterval(timer); });
+      return id;
+    },
+    clearWatch(id) {
+      const stop = watches.get(id);
+      if (stop) stop();
+      watches.delete(id);
+    }
+  };
+  try {
+    Object.defineProperty(navigator, 'geolocation', { configurable: true, value: geo });
+  } catch { navigator.geolocation = geo; }
+})();"#;
+
+pub(crate) fn configure(
+    builder: WebViewBuilder,
+    allowed_notification_host: Option<String>,
+    allowed_folder_host: Option<String>,
+    proxy: EventLoopProxy<UserEvent>,
+) -> WebViewBuilder {
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    filesystem::set_allowed_host(allowed_folder_host);
+    #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
+    let _ = allowed_folder_host;
+    #[cfg(target_os = "macos")]
+    let builder =
+        crate::native_notifications::install(builder, allowed_notification_host.as_deref());
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder;
+    #[cfg(all(target_os = "macos", feature = "geolocation"))]
+    let builder = builder.with_initialization_script(GEOLOCATION_SHIM);
+    #[cfg(not(all(target_os = "macos", feature = "geolocation")))]
+    let builder = builder;
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    let builder = builder.with_initialization_script(include_str!("native_bridge/menu-shim.js"));
+    #[cfg(not(all(target_os = "macos", feature = "max")))]
+    let builder = builder;
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    let builder = builder.with_initialization_script(include_str!("android/bluetooth-shim.js"));
+    #[cfg(not(all(feature = "bluetooth", not(target_os = "android"))))]
+    let builder = builder;
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    let builder =
+        builder.with_initialization_script(include_str!("native_bridge/filesystem-shim.js"));
+    #[cfg(not(all(feature = "filesystem", not(target_os = "android"))))]
+    let builder = builder;
+
+    builder.with_ipc_handler(move |request: Request<String>| {
+        #[cfg(target_os = "macos")]
+        if crate::native_notifications::handle(&request, allowed_notification_host.as_deref()) {
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = &allowed_notification_host;
+        let _ = proxy.send_event(UserEvent::Ipc {
+            uri: request.uri().to_string(),
+            body: request.body().clone(),
+        });
+    })
+}
+
+pub(crate) fn dispatch(uri: &str, body: &str, _proxy: EventLoopProxy<UserEvent>) -> Option<String> {
+    #[cfg(all(target_os = "macos", feature = "max"))]
+    if let Ok(update) = serde_json::from_str::<MenuUpdateIpc>(body) {
+        if update.id == "void-menu" {
+            if body.len() > MAX_MENU_UPDATE_BYTES {
+                eprintln!("Rejected native menu update: payload exceeds 16 KiB");
+                return None;
+            }
+            let Some(origin) = secure_origin(uri) else {
+                eprintln!("Rejected native menu update from a non-secure origin");
+                return None;
+            };
+            if let Err(error) = validate_menu_update(&update.menus) {
+                eprintln!("Rejected native menu update: {error}");
+                return None;
+            }
+            if let Err(error) = _proxy.send_event(UserEvent::MenuUpdate {
+                origin,
+                menus: update.menus,
+            }) {
+                eprintln!("Could not queue native menu update: {error}");
+            }
+            return None;
+        }
+    }
+
+    // The drag region and keyboard shortcuts carry no sensitive data and reach
+    // no external resource, so they are handled before origin-checked calls.
+    #[cfg(not(target_os = "android"))]
+    if let Ok(call) = serde_json::from_str::<IpcCall>(body) {
+        #[cfg(target_os = "macos")]
+        if call.method == "window.drag" {
+            let _ = _proxy.send_event(UserEvent::DragWindow);
+            return None;
+        }
+        if call.method == "window.shortcut" {
+            let action = match call.action.as_deref() {
+                Some("quit") => Some(ShortcutAction::Quit),
+                Some("close") => Some(ShortcutAction::Close),
+                Some("minimize") => Some(ShortcutAction::Minimize),
+                Some("fullscreen") => Some(ShortcutAction::Fullscreen),
+                Some("reload") => Some(ShortcutAction::Reload),
+                Some("back") => Some(ShortcutAction::Back),
+                Some("forward") => Some(ShortcutAction::Forward),
+                Some("zoom_in") => Some(ShortcutAction::ZoomIn),
+                Some("zoom_out") => Some(ShortcutAction::ZoomOut),
+                Some("zoom_reset") => Some(ShortcutAction::ZoomReset),
+                _ => None,
+            };
+            if let Some(shortcut) = action {
+                let _ = _proxy.send_event(UserEvent::Shortcut(shortcut));
+            }
+            return None;
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_os = "android")))]
+    {
+        let call = serde_json::from_str::<IpcCall>(body).ok()?;
+        if call.method.starts_with("filesystem.") {
+            let Some(origin) = secure_origin(uri) else {
+                return Some(reply_script(
+                    "__voidFileSystemReply",
+                    &call.id,
+                    Err((
+                        "Folder access is available only to secure website origins.".into(),
+                        "SecurityError",
+                    )),
+                ));
+            };
+            let id = call.id;
+            let method = call.method;
+            let args = call.args;
+            let worker_proxy = _proxy.clone();
+            let Some(slot) = take_worker_slot() else {
+                return Some(reply_script(
+                    "__voidFileSystemReply",
+                    &id,
+                    Err((
+                        "Too many folder operations are already running.".into(),
+                        "InvalidStateError",
+                    )),
+                ));
+            };
+            std::thread::Builder::new()
+                .name("void-filesystem-ipc".into())
+                .spawn(move || {
+                    // Layer 1 authentication and Layer 3 approval prompts block
+                    // this worker, never the UI event loop.
+                    let _slot = slot;
+                    let result = filesystem::handle(&origin, &method, &args, &worker_proxy);
+                    let script = reply_script("__voidFileSystemReply", &id, result);
+                    let _ = worker_proxy.send_event(UserEvent::Script {
+                        origin,
+                        source: script,
+                    });
+                })
+                .ok()?;
+            return None;
+        }
+    }
+
+    #[cfg(all(feature = "bluetooth", not(target_os = "android")))]
+    {
+        let call = serde_json::from_str::<IpcCall>(body).ok()?;
+        let origin = secure_origin(uri);
+
+        if call.method.starts_with("bluetooth.") {
+            let Some(origin) = origin else {
+                return Some(reply_script(
+                    "__voidBluetoothReply",
+                    &call.id,
+                    Err((
+                        "Bluetooth is available only to secure website origins.".into(),
+                        "SecurityError",
+                    )),
+                ));
+            };
+            let id = call.id;
+            let method = call.method;
+            std::thread::Builder::new()
+                .name("void-bluetooth-ipc".into())
+                .spawn(move || {
+                    let result =
+                        desktop_bluetooth::handle(&origin, &method, &call.args, _proxy.clone());
+                    let script = reply_script("__voidBluetoothReply", &id, result);
+                    let _ = _proxy.send_event(UserEvent::Script {
+                        origin,
+                        source: script,
+                    });
+                })
+                .ok()?;
+            return None;
+        }
+    }
+
+    process_call(uri, body)
+}
+
+fn process_call(uri: &str, body: &str) -> Option<String> {
+    let call = serde_json::from_str::<IpcCall>(body).ok()?;
+    let parsed_uri = uri.parse::<wry::http::Uri>().ok();
+    let secure_origin = parsed_uri
+        .as_ref()
+        .is_some_and(|parsed| secure_origin_from_uri(parsed).is_some());
+    let result: Result<serde_json::Value, String> = if !secure_origin {
+        Err("Native features are available only to secure website origins.".to_string())
+    } else {
+        match call.method.as_str() {
+            #[cfg(all(target_os = "macos", feature = "geolocation"))]
+            "geolocation.current" => {
+                macos_location::current_location().map(|(latitude, longitude, accuracy)| {
+                    serde_json::json!({
+                        "coords": {
+                            "latitude": latitude,
+                            "longitude": longitude,
+                            "accuracy": accuracy,
+                            "altitude": null,
+                            "altitudeAccuracy": null,
+                            "heading": null,
+                            "speed": null
+                        },
+                        "timestamp": now_millis()
+                    })
+                })
+            }
+            _ => Err("This native request is not supported by this build.".to_string()),
+        }
+    };
+    let message = match result {
+        Ok(value) => serde_json::json!({ "id": call.id, "value": value }),
+        Err(error) => serde_json::json!({ "id": call.id, "error": error }),
+    };
+    let encoded = serde_json::to_string(&message).ok()?;
+    Some(format!(
+        "if (typeof window.__voidNativeReply === 'function') window.__voidNativeReply({encoded});"
+    ))
+}
+
+#[cfg(any(
+    all(
+        not(target_os = "android"),
+        any(feature = "bluetooth", feature = "filesystem")
+    ),
+    all(target_os = "macos", feature = "max")
+))]
+pub(crate) fn secure_origin(uri: &str) -> Option<String> {
+    uri.parse::<wry::http::Uri>()
+        .ok()
+        .and_then(|parsed| secure_origin_from_uri(&parsed))
+}
+
+#[cfg(all(target_os = "macos", feature = "max"))]
+fn validate_menu_update(menus: &[MenuDefinition]) -> Result<(), &'static str> {
+    if menus.len() > MAX_DYNAMIC_MENUS {
+        return Err("at most five dynamic menus are allowed");
+    }
+
+    let mut ids = HashSet::new();
+    for menu in menus {
+        if menu.title.trim().is_empty()
+            || menu.title.chars().count() > 40
+            || menu.title.chars().any(char::is_control)
+        {
+            return Err("menu titles must be 1-40 printable characters");
+        }
+        if menu.items.is_empty() || menu.items.len() > MAX_DYNAMIC_MENU_ITEMS {
+            return Err("each dynamic menu must contain 1-30 items");
+        }
+        for item in &menu.items {
+            if item.id.is_empty()
+                || item.id.len() > 64
+                || !item
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+                || !ids.insert(item.id.as_str())
+            {
+                return Err(
+                    "item IDs must be unique and use only letters, digits, '.', '_', ':' or '-'",
+                );
+            }
+            if item.label.trim().is_empty()
+                || item.label.chars().count() > 120
+                || item.label.chars().any(char::is_control)
+            {
+                return Err("item labels must be 1-120 printable characters");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "macos", feature = "max"))]
+mod menu_tests {
+    use super::{validate_menu_update, MenuDefinition, MenuItemDefinition};
+
+    fn definition(items: &[(&str, &str)]) -> Vec<MenuDefinition> {
+        vec![MenuDefinition {
+            title: "Chats".to_string(),
+            items: items
+                .iter()
+                .map(|(id, label)| MenuItemDefinition {
+                    id: (*id).to_string(),
+                    label: (*label).to_string(),
+                })
+                .collect(),
+        }]
+    }
+
+    #[test]
+    fn accepts_valid_menu_definitions() {
+        assert!(validate_menu_update(&definition(&[("chat-1", "Recent chat")])).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_action_ids() {
+        assert!(validate_menu_update(&definition(&[
+            ("same", "First chat"),
+            ("same", "Second chat"),
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_control_characters_in_labels() {
+        assert!(validate_menu_update(&definition(&[("chat-1", "Chat\ninjected")])).is_err());
+    }
+}
+
+fn secure_origin_from_uri(uri: &wry::http::Uri) -> Option<String> {
+    let scheme = uri.scheme_str()?;
+    let host = uri.host()?;
+    let allowed = matches!(
+        (scheme, host),
+        ("https", _) | ("http", "localhost" | "127.0.0.1" | "[::1]") | ("void", "localhost")
+    );
+    if !allowed {
+        return None;
+    }
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let port = uri
+        .port_u16()
+        .filter(|port| *port != default_port)
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    Some(format!(
+        "{}://{}{}",
+        scheme.to_ascii_lowercase(),
+        host.to_ascii_lowercase(),
+        port
+    ))
+}
+
+#[cfg(all(
+    any(feature = "bluetooth", feature = "filesystem"),
+    not(target_os = "android")
+))]
+fn reply_script(
+    callback: &str,
+    id: &str,
+    result: Result<serde_json::Value, (String, &'static str)>,
+) -> String {
+    let message = match result {
+        Ok(value) => serde_json::json!({ "id": id, "value": value }),
+        Err((error, name)) => serde_json::json!({ "id": id, "error": error, "name": name }),
+    };
+    let encoded = serde_json::to_string(&message).unwrap_or_else(|_| "{}".to_string());
+    format!("if (typeof window.{callback} === 'function') window.{callback}({encoded});")
+}
+
+#[cfg(all(target_os = "macos", feature = "geolocation"))]
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+#[cfg(all(target_os = "macos", feature = "geolocation"))]
+mod macos_location {
+    use std::{
+        ffi::{c_char, c_void},
+        mem,
+        sync::{mpsc, Mutex, OnceLock},
+        time::{Duration, Instant},
+    };
+
+    #[repr(C)]
+    struct Coordinate {
+        latitude: f64,
+        longitude: f64,
+    }
+
+    type Object = *mut c_void;
+    type Selector = *mut c_void;
+    type Imp = unsafe extern "C" fn();
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> Object;
+        fn objc_allocateClassPair(
+            superclass: Object,
+            name: *const c_char,
+            extra_bytes: usize,
+        ) -> Object;
+        fn objc_registerClassPair(class: Object);
+        fn class_addMethod(
+            class: Object,
+            selector: Selector,
+            implementation: Imp,
+            types: *const c_char,
+        ) -> bool;
+        fn sel_registerName(name: *const c_char) -> Selector;
+        fn objc_msgSend();
+    }
+
+    // Load CoreLocation before asking the Objective-C runtime for its class.
+    // CoreLocation does not export a stable Objective-C class linker symbol
+    // for Rust to reference directly on every supported macOS SDK.
+    #[link(name = "System")]
+    unsafe extern "C" {
+        fn dlopen(filename: *const c_char, mode: i32) -> *mut c_void;
+    }
+
+    const RTLD_NOW: i32 = 2;
+    const RTLD_GLOBAL: i32 = 8;
+    static CORE_LOCATION_FRAMEWORK: OnceLock<Result<usize, ()>> = OnceLock::new();
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFRunLoopDefaultMode: Object;
+        fn CFRunLoopRunInMode(mode: Object, seconds: f64, return_after_source_handled: bool)
+            -> i32;
+    }
+
+    static DELEGATE_CLASS: OnceLock<usize> = OnceLock::new();
+    static RESULT_SENDER: Mutex<Option<mpsc::Sender<Result<(f64, f64, f64), String>>>> =
+        Mutex::new(None);
+
+    pub(super) fn current_location() -> Result<(f64, f64, f64), String> {
+        let (sender, receiver) = mpsc::channel();
+        {
+            let mut slot = RESULT_SENDER
+                .lock()
+                .map_err(|_| "Location bridge is unavailable".to_string())?;
+            *slot = Some(sender);
+        }
+
+        unsafe {
+            let framework = CORE_LOCATION_FRAMEWORK.get_or_init(|| {
+                let handle = dlopen(
+                    c"/System/Library/Frameworks/CoreLocation.framework/CoreLocation".as_ptr(),
+                    RTLD_NOW | RTLD_GLOBAL,
+                );
+                if handle.is_null() {
+                    Err(())
+                } else {
+                    Ok(handle as usize)
+                }
+            });
+            if framework.is_err() {
+                clear_sender();
+                return Err("Could not load the macOS CoreLocation framework.".into());
+            }
+            let manager_class = objc_getClass(c"CLLocationManager".as_ptr());
+            if manager_class.is_null() {
+                clear_sender();
+                return Err("CoreLocation is unavailable on this Mac.".into());
+            }
+            let alloc = selector(c"alloc");
+            let init = selector(c"init");
+            let manager = send_object(send_object(manager_class, alloc), init);
+            if manager.is_null() {
+                clear_sender();
+                return Err("Could not create a CoreLocation manager.".into());
+            }
+            let delegate_class = delegate_class()?;
+            let delegate = send_object(send_object(delegate_class, alloc), init);
+            if delegate.is_null() {
+                clear_sender();
+                return Err("Could not create the CoreLocation delegate.".into());
+            }
+            send_object_arg(manager, selector(c"setDelegate:"), delegate);
+            send_void(manager, selector(c"requestWhenInUseAuthorization"));
+            send_void(manager, selector(c"requestLocation"));
+
+            let deadline = Instant::now() + Duration::from_secs(35);
+            let mut answer = None;
+            while Instant::now() < deadline {
+                if let Ok(value) = receiver.try_recv() {
+                    answer = Some(value);
+                    break;
+                }
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
+            }
+            clear_sender();
+            answer.unwrap_or_else(|| {
+                Err("Timed out waiting for macOS location permission or a location fix.".into())
+            })
+        }
+    }
+
+    fn clear_sender() {
+        if let Ok(mut slot) = RESULT_SENDER.lock() {
+            *slot = None;
+        }
+    }
+
+    unsafe fn delegate_class() -> Result<Object, String> {
+        let address = *DELEGATE_CLASS.get_or_init(|| unsafe {
+            let class_name = c"VoidEngineLocationDelegate";
+            let class =
+                objc_allocateClassPair(objc_getClass(c"NSObject".as_ptr()), class_name.as_ptr(), 0);
+            if class.is_null() {
+                return 0;
+            }
+            let update = selector(c"locationManager:didUpdateLocations:");
+            let failure = selector(c"locationManager:didFailWithError:");
+            let authorization = selector(c"locationManagerDidChangeAuthorization:");
+            let update_types = c"v@:@@";
+            let object_types = c"v@:@";
+            let update_imp: Imp = mem::transmute(location_updated as *const ());
+            let failure_imp: Imp = mem::transmute(location_failed as *const ());
+            let authorization_imp: Imp = mem::transmute(authorization_changed as *const ());
+            if !class_addMethod(class, update, update_imp, update_types.as_ptr())
+                || !class_addMethod(class, failure, failure_imp, object_types.as_ptr())
+                || !class_addMethod(
+                    class,
+                    authorization,
+                    authorization_imp,
+                    object_types.as_ptr(),
+                )
+            {
+                return 0;
+            }
+            objc_registerClassPair(class);
+            class as usize
+        });
+        if address == 0 {
+            Err("Could not register the CoreLocation delegate.".into())
+        } else {
+            Ok(address as Object)
+        }
+    }
+
+    unsafe extern "C" fn authorization_changed(_this: Object, _cmd: Selector, manager: Object) {
+        let status = send_isize(manager, selector(c"authorizationStatus"));
+        match status {
+            3 | 4 => send_void(manager, selector(c"requestLocation")),
+            1 | 2 => send_error("Location access was denied in macOS Privacy & Security settings."),
+            _ => {}
+        }
+    }
+
+    unsafe extern "C" fn location_updated(
+        _this: Object,
+        _cmd: Selector,
+        _manager: Object,
+        locations: Object,
+    ) {
+        let last = send_object(locations, selector(c"lastObject"));
+        if last.is_null() {
+            send_error("macOS did not return a location fix.");
+            return;
+        }
+        let get_coordinate: unsafe extern "C" fn(Object, Selector) -> Coordinate =
+            mem::transmute(objc_msgSend as *const ());
+        let coordinate = get_coordinate(last, selector(c"coordinate"));
+        let accuracy = send_f64(last, selector(c"horizontalAccuracy"));
+        if coordinate.latitude.is_finite() && coordinate.longitude.is_finite() && accuracy >= 0.0 {
+            send_result(Ok((coordinate.latitude, coordinate.longitude, accuracy)));
+        } else {
+            send_error("macOS returned an invalid location fix.");
+        }
+    }
+
+    unsafe extern "C" fn location_failed(
+        _this: Object,
+        _cmd: Selector,
+        _manager: Object,
+        _error: Object,
+    ) {
+        send_error("CoreLocation could not determine the Mac's location.");
+    }
+
+    fn send_error(error: &str) {
+        send_result(Err(error.to_string()));
+    }
+
+    fn send_result(result: Result<(f64, f64, f64), String>) {
+        if let Ok(slot) = RESULT_SENDER.lock() {
+            if let Some(sender) = slot.as_ref() {
+                let _ = sender.send(result);
+            }
+        }
+    }
+
+    unsafe fn selector(name: &std::ffi::CStr) -> Selector {
+        sel_registerName(name.as_ptr())
+    }
+
+    unsafe fn send_object(receiver: Object, selector: Selector) -> Object {
+        let function: unsafe extern "C" fn(Object, Selector) -> Object =
+            mem::transmute(objc_msgSend as *const ());
+        function(receiver, selector)
+    }
+
+    unsafe fn send_object_arg(receiver: Object, selector: Selector, value: Object) {
+        let function: unsafe extern "C" fn(Object, Selector, Object) =
+            mem::transmute(objc_msgSend as *const ());
+        function(receiver, selector, value);
+    }
+
+    unsafe fn send_void(receiver: Object, selector: Selector) {
+        let function: unsafe extern "C" fn(Object, Selector) =
+            mem::transmute(objc_msgSend as *const ());
+        function(receiver, selector);
+    }
+
+    unsafe fn send_isize(receiver: Object, selector: Selector) -> isize {
+        let function: unsafe extern "C" fn(Object, Selector) -> isize =
+            mem::transmute(objc_msgSend as *const ());
+        function(receiver, selector)
+    }
+
+    unsafe fn send_f64(receiver: Object, selector: Selector) -> f64 {
+        let function: unsafe extern "C" fn(Object, Selector) -> f64 =
+            mem::transmute(objc_msgSend as *const ());
+        function(receiver, selector)
+    }
+}

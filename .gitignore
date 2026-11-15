@@ -1,0 +1,7 @@
+/target
+/client/target
+/branding/icon.png
+/branding/app.ico
+/branding/void.desktop
+/branding/android-res/
+.DS_Store

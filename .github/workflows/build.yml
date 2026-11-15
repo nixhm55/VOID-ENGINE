@@ -1,0 +1,452 @@
+name: Build VOID
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_profile:
+        description: >-
+          If you want to know the differences between Lite and Max, all details are provided in the README.
+        type: choice
+        required: true
+        options:
+          - Void Engine Lite — Lightweight
+          - Void Engine Max — Full features
+        default: Void Engine Lite — Lightweight
+      build_macos:
+        description: Build macOS DMG
+        type: boolean
+        required: false
+        default: true
+      build_windows:
+        description: Build Windows packages
+        type: boolean
+        required: false
+        default: true
+      build_linux:
+        description: Build Linux packages
+        type: boolean
+        required: false
+        default: true
+      build_android:
+        description: Build Android APK
+        type: boolean
+        required: false
+        default: true
+      target_url:
+        description: Website URL (blank loads the bundled local site)
+        type: string
+        required: false
+        default: ''
+      app_name:
+        description: App name (leave blank to use the website domain)
+        type: string
+        required: false
+        default: ''
+      android_package:
+        description: Android application ID (blank derives it from the app name)
+        type: string
+        required: false
+        default: ''
+      icon_url:
+        description: Optional PNG or ICO icon URL (blank uses the site icon or a generated default)
+        type: string
+        required: false
+        default: ''
+      width:
+        description: Initial window width
+        type: string
+        required: true
+        default: '1200'
+      height:
+        description: Initial window height
+        type: string
+        required: true
+        default: '780'
+      version:
+        description: App bundle version
+        type: string
+        required: true
+        default: '1.0.0'
+      fullscreen:
+        description: Start in fullscreen mode
+        type: boolean
+        required: false
+        default: false
+      new_window:
+        description: Allow opening links in separate windows
+        type: boolean
+        required: false
+        default: false
+      multi_arch:
+        description: Use the universal macOS master binary (Intel + Apple Silicon)
+        type: boolean
+        required: false
+        default: true
+      hide_title_bar:
+        description: Hide the title bar (macOS only)
+        type: boolean
+        required: false
+        default: false
+      windows_format:
+        description: Windows packages to build
+        type: choice
+        required: true
+        options: [exe, msi, both]
+        default: both
+      linux_format:
+        description: Linux packages to build
+        type: choice
+        required: true
+        options: [deb, appimage, both]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: macOS DMG
+    if: ${{ inputs.build_macos }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure app metadata
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+        run: node scripts/configure-build.mjs
+      - name: Discover and prepare app icon
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          ICON_URL: ${{ inputs.icon_url }}
+        run: node scripts/prepare-branding.mjs
+      - name: Download selected macOS master binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.multi_arch && (inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-macos-universal' || 'void-engine-lite-macos-universal') || format('void-engine-{0}-macos-{1}', inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite', runner.arch == 'ARM64' && 'aarch64' || 'x86_64') }}
+          MASTER_BINARY_OUTPUT: target/master/void
+        run: node scripts/download-master-binary.mjs
+      - name: Package macOS app and DMG
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+          MASTER_BINARY_PATH: target/master/void
+          ENGINE_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
+        run: node scripts/package-macos-dmg.mjs
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-macos-dmg
+          path: output/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows ${{ matrix.format }}
+    if: ${{ inputs.build_windows }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        format: ${{ fromJSON(inputs.windows_format == 'both' && '["exe","msi"]' || format('["{0}"]', inputs.windows_format)) }}
+    steps:
+      - name: Fetch source snapshot without Git checkout overhead
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'void-source.tar.gz'
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/tarball/$env:GITHUB_SHA"
+          & curl.exe --fail --location --silent --show-error --retry 3 `
+            --header 'Accept: application/vnd.github+json' `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --output $archive $uri
+          if ($LASTEXITCODE -ne 0) { throw "Could not download source snapshot (curl exit $LASTEXITCODE)" }
+          if (-not (Test-Path -LiteralPath $archive) -or (Get-Item -LiteralPath $archive).Length -eq 0) {
+            throw 'GitHub returned an empty source snapshot.'
+          }
+          & tar.exe -xzf $archive --strip-components=1 -C $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw "Could not extract source snapshot (tar exit $LASTEXITCODE)" }
+          foreach ($path in @(
+            'void.json',
+            'scripts/configure-build.mjs',
+            'scripts/prepare-branding.mjs',
+            'scripts/download-master-binary.mjs',
+            'scripts/prepare-windows-build.mjs',
+            'scripts/set-windows-icon.ps1',
+            'scripts/package-windows-msi.ps1'
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path))) {
+              throw "Source snapshot is missing required packaging file: $path"
+            }
+          }
+      - name: Prepare Windows app metadata, icon, and master binary
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-windows-x86_64.exe' || 'void-engine-lite-windows-x86_64.exe' }}
+          MASTER_BINARY_OUTPUT: target/master/void.exe
+        run: node scripts/prepare-windows-build.mjs
+      - name: Apply per-app Windows executable icon
+        if: ${{ matrix.format == 'exe' }}
+        shell: pwsh
+        run: ./scripts/set-windows-icon.ps1 -Executable target/master/void.exe -IconFile branding/app.ico
+      - name: Package Windows executable and config
+        if: ${{ matrix.format == 'exe' }}
+        env:
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force output | Out-Null
+          Copy-Item -Force target/master/void.exe "output/$($env:APP_SLUG).exe"
+          Copy-Item -Force void.json "output/$($env:APP_SLUG).json"
+      - name: Ensure WiX Toolset is available
+        if: ${{ matrix.format == 'msi' }}
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $wixBin = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'WiX Toolset v3.14/bin'
+            if (Test-Path (Join-Path $wixBin 'candle.exe')) { Add-Content $env:GITHUB_PATH $wixBin }
+            else { throw 'WiX Toolset 3.14 is unavailable on this runner.' }
+          }
+      - name: Package Windows MSI
+        if: ${{ matrix.format == 'msi' }}
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+          MASTER_BINARY_PATH: target/master/void.exe
+        shell: pwsh
+        run: ./scripts/package-windows-msi.ps1
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ matrix.format == 'exe' }}
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-windows-exe
+          path: |
+            output/${{ steps.configure.outputs.app_slug }}.exe
+            output/${{ steps.configure.outputs.app_slug }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ matrix.format == 'msi' }}
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-windows-msi
+          path: output/${{ steps.configure.outputs.app_slug }}.msi
+          if-no-files-found: error
+
+  build-linux:
+    name: Linux ${{ matrix.format }}
+    if: ${{ inputs.build_linux }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        format: ${{ fromJSON(inputs.linux_format == 'both' && '["deb","appimage"]' || format('["{0}"]', inputs.linux_format)) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure app metadata
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+        run: node scripts/configure-build.mjs
+      - name: Discover and prepare app icon
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          ICON_URL: ${{ inputs.icon_url }}
+        run: node scripts/prepare-branding.mjs
+      - name: Download Linux master binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_BINARY_ASSET: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'void-engine-max-linux-x86_64' || 'void-engine-lite-linux-x86_64' }}
+          MASTER_BINARY_OUTPUT: target/master/void
+        run: node scripts/download-master-binary.mjs
+      - name: Package Debian archive
+        if: ${{ matrix.format == 'deb' }}
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+        run: bash scripts/package-linux-deb.sh target/master/void "output/${{ steps.configure.outputs.app_slug }}.deb"
+      - name: Cache AppImage tool
+        if: ${{ matrix.format == 'appimage' }}
+        uses: actions/cache@v6.1.0
+        continue-on-error: true
+        with:
+          path: .cache/appimagetool-x86_64.AppImage
+          key: appimagetool-x86_64-v2
+      - name: Package Linux AppImage
+        if: ${{ matrix.format == 'appimage' }}
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p output AppDir/usr/bin AppDir/usr/share/applications \
+            AppDir/usr/share/icons/hicolor/256x256/apps \
+            AppDir/usr/share/icons/hicolor/512x512/apps \
+            AppDir/usr/share/metainfo .cache
+          install -m 0755 target/master/void "AppDir/usr/bin/${APP_SLUG}"
+          install -m 0644 void.json "AppDir/usr/bin/${APP_SLUG}.json"
+          cp branding/icon.png "AppDir/${APP_SLUG}.png"
+          cp branding/icon.png "AppDir/.DirIcon"
+          cp branding/icon.png "AppDir/usr/share/icons/hicolor/256x256/apps/${APP_SLUG}.png"
+          cp branding/icon.png "AppDir/usr/share/icons/hicolor/512x512/apps/${APP_SLUG}.png"
+          cat > "AppDir/${APP_SLUG}.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=${APP_NAME}
+          Comment=${APP_NAME} desktop application powered by VOID Engine
+          Exec=${APP_SLUG}
+          Icon=${APP_SLUG}
+          StartupWMClass=${APP_SLUG}
+          Categories=Utility;Network;
+          Terminal=false
+          EOF
+          cp "AppDir/${APP_SLUG}.desktop" AppDir/usr/share/applications/
+          cat > "AppDir/usr/share/metainfo/${APP_SLUG}.metainfo.xml" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>com.void.${APP_SLUG}</id>
+            <name>${APP_NAME}</name>
+            <summary>${APP_NAME} desktop application</summary>
+            <metadata_license>MIT</metadata_license>
+            <project_license>MIT</project_license>
+            <launchable type="desktop-id">${APP_SLUG}.desktop</launchable>
+            <releases>
+              <release version="${APP_VERSION}" date="2026-11-15"/>
+            </releases>
+          </component>
+          EOF
+          cat > AppDir/AppRun <<EOF
+          #!/bin/sh
+          HERE="\$(dirname "\$(readlink -f "\$0")")"
+          exec "\$HERE/usr/bin/${APP_SLUG}" "\$@"
+          EOF
+          chmod +x AppDir/AppRun
+          if [ ! -f .cache/appimagetool-x86_64.AppImage ]; then
+            curl --fail --location --silent --show-error \
+              https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+              -o .cache/appimagetool-x86_64.AppImage
+          fi
+          chmod +x .cache/appimagetool-x86_64.AppImage
+          ARCH=x86_64 .cache/appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir "output/${APP_SLUG}.AppImage"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-linux-${{ matrix.format }}
+          path: output/*
+          if-no-files-found: error
+
+  build-android:
+    name: Android APK
+    if: ${{ inputs.build_android }}
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Configure app metadata
+        id: configure
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          TARGET_URL: ${{ inputs.target_url }}
+          ANDROID_PACKAGE: ${{ inputs.android_package }}
+          ICON_URL: ${{ inputs.icon_url }}
+          APP_WIDTH: ${{ inputs.width }}
+          APP_HEIGHT: ${{ inputs.height }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_FULLSCREEN: ${{ inputs.fullscreen }}
+          APP_NEW_WINDOW: ${{ inputs.new_window }}
+          APP_HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
+        run: node scripts/configure-build.mjs
+      - name: Discover and prepare app icon
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          ICON_URL: ${{ inputs.icon_url }}
+        run: node scripts/prepare-branding.mjs
+      - name: Download Android master APK and pre-baked tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MASTER_BINARY_RELEASE_PREFIX: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'engine-master-max-' || 'engine-master-lite-' }}
+          MASTER_BINARY_SOURCE_SHA: ${{ github.sha }}
+          MASTER_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
+        run: |
+          set -euo pipefail
+          MASTER_BINARY_ASSET="void-engine-${MASTER_PROFILE}-android-template.apk" \
+          MASTER_BINARY_OUTPUT="target/master/void-android-template.apk" \
+            node scripts/download-master-binary.mjs
+
+          mkdir -p .cache/android-tools
+          if MASTER_BINARY_ASSET="void-engine-${MASTER_PROFILE}-android-tools.tar.gz" \
+             MASTER_BINARY_OUTPUT=".cache/void-android-tools.tar.gz" \
+             node scripts/download-master-binary.mjs 2>/dev/null; then
+            tar -xzf .cache/void-android-tools.tar.gz -C .cache/android-tools
+            chmod +x .cache/android-tools/sdk/build-tools/34.0.0/zipalign .cache/android-tools/sdk/build-tools/34.0.0/apksigner
+            echo "ANDROID_HOME=${GITHUB_WORKSPACE}/.cache/android-tools/sdk" >> "$GITHUB_ENV"
+            echo "APKTOOL_JAR=${GITHUB_WORKSPACE}/.cache/android-tools/apktool-3.0.3.jar" >> "$GITHUB_ENV"
+            echo "APKTOOL_FRAMEWORK_DIR=${GITHUB_WORKSPACE}/.cache/android-tools/framework" >> "$GITHUB_ENV"
+            echo "CARGO_APK_RELEASE_KEYSTORE=${GITHUB_WORKSPACE}/.cache/android-tools/debug.keystore" >> "$GITHUB_ENV"
+          else
+            export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+            if [[ ! -f "$ANDROID_HOME/platforms/android-33/android.jar" \
+              || ! -x "$ANDROID_HOME/build-tools/34.0.0/zipalign" \
+              || ! -x "$ANDROID_HOME/build-tools/34.0.0/apksigner" ]]; then
+              set +o pipefail
+              yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+                "platforms;android-33" "build-tools;34.0.0"
+              set -o pipefail
+            fi
+            mkdir -p ~/.android
+            if [[ ! -f ~/.android/debug.keystore ]]; then
+              keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey \
+                -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname 'CN=Android Debug,O=Android,C=US' -noprompt
+            fi
+            echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+            echo "CARGO_APK_RELEASE_KEYSTORE=/home/runner/.android/debug.keystore" >> "$GITHUB_ENV"
+          fi
+      - name: Repackage app-specific Android APK
+        env:
+          APP_NAME: ${{ steps.configure.outputs.app_name }}
+          APP_SLUG: ${{ steps.configure.outputs.app_slug }}
+          ANDROID_PACKAGE: ${{ steps.configure.outputs.android_package }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_PROFILE: ${{ inputs.engine_profile == 'Void Engine Max — Full features' && 'max' || 'lite' }}
+        run: bash scripts/package-android-master.sh target/master/void-android-template.apk "output/${{ steps.configure.outputs.app_slug }}.apk"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.configure.outputs.app_slug }}-android-apk
+          path: output/*.apk
+          if-no-files-found: error
